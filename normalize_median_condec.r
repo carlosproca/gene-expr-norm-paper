@@ -3,8 +3,8 @@
 # 
 # Written by Carlos P. Roca
 # as Research funded by the European Union
-# for the research paper by Roca, Gomes, Amorim & Scott-Fordsmand: "A novel 
-# normalization approach unveils blind spots in gene expression profiling"
+# for the research paper by Roca, Gomes, Amorim & Scott-Fordsmand: "Variation-
+# preserving normalization unveils blind spots in gene expression profiling".
 # 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal

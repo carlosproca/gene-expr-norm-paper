@@ -1,8 +1,8 @@
 # Gene Expression Normalization Paper
 
 Custom code for reproducing the results of the research paper by 
-Roca, Gomes, Amorim & Scott-Fordsmand: "A novel normalization approach 
-unveils blind spots in gene expression profiling". 
+Roca, Gomes, Amorim & Scott-Fordsmand: "Variation-preserving normalization 
+unveils blind spots in gene expression profiling".
 
 
 ## Instructions
@@ -12,8 +12,8 @@ To reproduce the results of the paper, please
 1. Install/Update R and Bioconductor. Results were obtained with R version 
 3.2.0 and Bioconductor version 3.1.
 
-2. Install required libraries: plotrix and RColorBrewer (R), genefilter and 
-limma (Bioconductor).
+2. Install/Update required libraries: plotrix and RColorBrewer (R), genefilter 
+and limma (Bioconductor).
 
 3. Download the files in this repository into a local directory (or fork/clone 
 this repository).
@@ -46,13 +46,13 @@ example,
 
 Execution of the script `analyze_gene_expression.r` generates the following 
 subdirectories:
-- `bc_variation`  between-condition variation (figure 2)
+- `bc_variation`  between-condition variation (figures 2, S1)
 - `boxplot`       boxplots of expression levels (figure 1)
 - `data`          intermediate results
-- `diff_expr`     differential expression (figure 3, extended data figures 1-2)
-- `pvalue`        identification of non-differentially expressed genes (videos 
+- `diff_expr`     differential expression (figures 3, S2)
+- `pvalue`        identification of non-differentially expressed genes (movies 
 4-5)
-- `stdvec`        convergence of standard-vector normalization (videos 1-3)
-- `table`         experimental condition tables (extended data tables 1-2)
+- `stdvec`        convergence of standard-vector normalization (movies 1-3)
+- `table`         experimental condition tables (tables S1, S2)
 
 
