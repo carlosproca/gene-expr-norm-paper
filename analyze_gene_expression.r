@@ -393,6 +393,8 @@ data.tag <- c( "real", "normal" )
 
 norm.method <- c( "median.condec", "stdvec.condec" )
 
+between.condition.mean <- c( "grand.mean", "median.mean" )
+
 if ( ! file.exists( bc.variation.dir ) )
     dir.create( bc.variation.dir )
 
@@ -405,6 +407,7 @@ for ( dtag in data.tag )
         "stdvec.condec.norm.result" ) %in% loaded )
     
     cond.grand.mean.sd <- data.frame( h0.probe.num )
+    cond.median.mean.sd <- data.frame( h0.probe.num )
     
     for ( nmeth in norm.method )
     {        
@@ -465,6 +468,12 @@ for ( dtag in data.tag )
         norm.within.cond.var <- rowSums( norm.within.cond.var ) / 
                 ( rowSums( norm.within.cond.n ) - ma.condition.num )
         
+        # calculate within-condition medians
+        norm.within.cond.median <- apply( norm.within.cond.data, 2, 
+            median, na.rm=TRUE )
+        norm.within.cond.median.mean <- sapply( ma.condition, function( cond ) 
+            mean( norm.within.cond.median[ cond == ma.sample.condition ] ) )
+        
         for ( h0p.random in c( TRUE, FALSE ) )
         {
             norm.h0p.method <- paste0( nmeth, 
@@ -489,9 +498,17 @@ for ( dtag in data.tag )
                     sd( norm.within.cond.grand.mean - 
                         norm.between.cond.result$offset )
                 
+                norm.between.cond.median.mean.sd <- 
+                    sd( norm.within.cond.median.mean - 
+                        norm.between.cond.result$offset )
+                
                 cond.grand.mean.sd[[ norm.h0p.method ]][ 
                     cond.grand.mean.sd$h0.probe.num == h0p.num ] <- 
                     norm.between.cond.grand.mean.sd
+                
+                cond.median.mean.sd[[ norm.h0p.method ]][ 
+                    cond.median.mean.sd$h0.probe.num == h0p.num ] <- 
+                    norm.between.cond.median.mean.sd
             }
         }
     }
@@ -500,67 +517,101 @@ for ( dtag in data.tag )
     grand.mean.sd.file.name <- paste0( dtag, "_grand.mean.sd.rda" )
     save( cond.grand.mean.sd, 
         file = file.path( data.dir, grand.mean.sd.file.name ) )
+
+    # save variance of median means
+    median.mean.sd.file.name <- paste0( dtag, "_median.mean.sd.rda" )
+    save( cond.median.mean.sd, 
+        file = file.path( data.dir, median.mean.sd.file.name ) )
     
-    # plot variance of grand means
-    
-    gmp.file.name <- paste0( dtag, "_grand.mean.sd.pdf" )
-    cairo_pdf( filename = file.path( bc.variation.dir, gmp.file.name ), 
-        width=3.5, height=2.8 )
-    
-    par( mar = c( 1.7, 1.45, 0.15, 0.15 ), mgp = c( 0.75, 0, 0 ), tcl=-0.15 )
-    
-    gmp.xlim <- range( h0.probe.num )
-    x.tick.pos <- c( 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 )
-    x.tick.lab <- c( "20", "", "100", "", "", "1000", "", "", "10000", "" )
-    
-    if ( dtag == "real" ) {
-        gmp.ylim <- 0.5 * 10^c( -1.7, 0.1 )
-        y.tick.pos <- c( 0.01, 0.02, 0.05, 0.1, 0.2, 0.5 )
-        y.tick.lab <- c( "0.01", "", "", "0.1", "", "0.5" )
-    }
-    else {    # dtag == "normal"
-        gmp.ylim <- 0.5 * 10^c( -2.7, 0.1 )
-        y.tick.pos <- c( 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5 )
-        y.tick.lab <- c( "0.001", "", "", "0.01", "", "", "0.1", "", "0.5" )
-    }
-    
-    norm.method.col <- c( "black", "blue" )
-    names( norm.method.col ) <- norm.method
-    
-    plot( 1, type="n", cex.lab=0.55, log="xy", xaxt="n", yaxt="n", 
-        xlim=gmp.xlim , ylim=gmp.ylim, 
-        xlab="# Gene probes in between-condition normalization", 
-        ylab="Between-condition variation" )
-    
-    axis( 1, at=x.tick.pos, labels=x.tick.lab, cex.axis=0.55 )
-    axis( 2, at=y.tick.pos, labels=y.tick.lab, cex.axis=0.55 )
-    
-    segments( 20, 0.5, 20e3, 0.5*10^-1.5, lty=2, lwd=2 )
-    
-    for ( nmeth in norm.method )
+    # plot variance of grand means and median means
+    for ( bcmean in between.condition.mean )
     {
-        norm.result <- get( paste0( nmeth, ".norm.result" ) )
+        bcmp.file.name <- paste0( dtag, "_", bcmean, ".sd.pdf" )
+        cairo_pdf( filename = file.path( bc.variation.dir, bcmp.file.name ), 
+            width=3.5, height=2.8 )
         
-        norm.h0.probe.num <- length( norm.result$between.condition.h0.probe )
+        par( mar = c( 1.7, 1.45, 0.15, 0.15 ), mgp = c( 0.75, 0, 0 ), 
+            tcl=-0.15 )
         
-        norm.cond.mean <- sapply( ma.condition, function( cond ) 
-            rowMeans( norm.result$data[ , cond == ma.sample.condition ], 
-                na.rm=TRUE ) )
-        norm.cond.grand.mean.sd <- sd( colMeans( norm.cond.mean ) )
+        bcmp.xlim <- range( h0.probe.num )
+        x.tick.pos <- c( 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 )
+        x.tick.lab <- c( "20", "", "100", "", "", "1000", "", "", "10000", "" )
         
-        points( norm.h0.probe.num, norm.cond.grand.mean.sd, 
-            col = norm.method.col[ nmeth ], pch=1, cex=2, lwd=2 )
+        if ( bcmean == "grand.mean" )
+        {
+            if ( dtag == "real" ) {
+                bcmp.ylim <- 0.5 * 10^c( -1.7, 0.1 )
+                y.tick.pos <- c( 0.01, 0.02, 0.05, 0.1, 0.2, 0.5 )
+                y.tick.lab <- c( "0.01", "", "", "0.1", "", "0.5" )
+            }
+            else {    # dtag == "normal"
+                bcmp.ylim <- 0.5 * 10^c( -2.7, 0.1 )
+                y.tick.pos <- 
+                    c( 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5 )
+                y.tick.lab <- 
+                    c( "0.001", "", "", "0.01", "", "", "0.1", "", "0.5" )
+            }
+        }
+        else    # bcmean == "median.mean"
+        {
+            if ( dtag == "real" )
+                bcmp.ylim <- 0.5 * 10^c( -1.8, 0.1 )
+            else    # dtag == "normal"
+                bcmp.ylim <- 0.5 * 10^c( -1.9, 0.1 )
+            y.tick.pos <- c( 0.01, 0.02, 0.05, 0.1, 0.2, 0.5 )
+            y.tick.lab <- c( "0.01", "", "", "0.1", "", "0.5" )
+        }
         
-        points( cond.grand.mean.sd$h0.probe.num, 
-            cond.grand.mean.sd[[ paste0( nmeth, ".random" ) ]], cex=0.8, 
-            col = norm.method.col[ nmeth ], pch=1 )
+        norm.method.col <- c( "black", "blue" )
+        names( norm.method.col ) <- norm.method
         
-        points( cond.grand.mean.sd$h0.probe.num, 
-            cond.grand.mean.sd[[ paste0( nmeth, ".pvalue" ) ]], cex=0.6, 
-            col = norm.method.col[ nmeth ], pch=20 )
+        plot( 1, type="n", cex.lab=0.55, log="xy", xaxt="n", yaxt="n", 
+            xlim=bcmp.xlim , ylim=bcmp.ylim, 
+            xlab="# Gene probes in between-condition normalization", 
+            ylab="Between-condition variation" )
+        
+        axis( 1, at=x.tick.pos, labels=x.tick.lab, cex.axis=0.55 )
+        axis( 2, at=y.tick.pos, labels=y.tick.lab, cex.axis=0.55 )
+        
+        segments( 20, 0.5, 20e3, 0.5*10^-1.5, lty=2, lwd=2 )
+        
+        for ( nmeth in norm.method )
+        {
+            norm.result <- get( paste0( nmeth, ".norm.result" ) )
+            
+            norm.h0.probe.num <- 
+                length( norm.result$between.condition.h0.probe )
+            
+            if ( bcmean == "grand.mean" ) {
+                norm.cond.mean <- sapply( ma.condition, function( cond ) 
+                    rowMeans( norm.result$data[ , 
+                        cond == ma.sample.condition ], na.rm=TRUE ) )
+                norm.cond.bcmean.sd <- sd( colMeans( norm.cond.mean ) )
+            }
+            else {    # bcmean == "median.mean"
+                norm.cond.median <- apply( norm.result$data, 2, median, 
+                    na.rm=TRUE )
+                norm.cond.median.mean <- sapply( ma.condition, function( cond ) 
+                    mean( norm.cond.median[ cond == ma.sample.condition ] ) )
+                norm.cond.bcmean.sd <- sd( norm.cond.median.mean )
+            }
+            
+            points( norm.h0.probe.num, norm.cond.bcmean.sd, 
+                col = norm.method.col[ nmeth ], pch=1, cex=2, lwd=2 )
+            
+            cond.bcmean.sd <- get( paste0( "cond.", bcmean, ".sd" ) )
+            
+            points( cond.bcmean.sd$h0.probe.num, 
+                cond.bcmean.sd[[ paste0( nmeth, ".random" ) ]], cex=0.8, 
+                col = norm.method.col[ nmeth ], pch=1 )
+            
+            points( cond.bcmean.sd$h0.probe.num, 
+                cond.bcmean.sd[[ paste0( nmeth, ".pvalue" ) ]], cex=0.6, 
+                col = norm.method.col[ nmeth ], pch=20 )
+        }
+        
+        dev.off()
     }
-    
-    dev.off()
 }
 
 
