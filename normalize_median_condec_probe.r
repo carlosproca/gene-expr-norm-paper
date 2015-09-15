@@ -121,7 +121,8 @@ normalize.median.selection.probe <- function( edata, edata.fstat,
     if ( verbose )
         cat( "\n" )
     
-    if ( iter == iter.max )
+    if ( median.offset.accum.step < median.offset.accum.step.max && 
+            median.offset.ratio >= median.offset.single.threshold )
         stop( "no convergence in normalize.median.condec.probe" )
     
     dimnames( norm.median.offset ) <- NULL
@@ -142,15 +143,19 @@ calculate.median.offset.probe <- function( edata, edata.fstat, within.cond.var,
     if ( is.null( h0.probe ) )
     {
         # calculate f statistics for each probe
-        expr.k <- ncol( within.cond.n )
-        expr.n <- rowSums( within.cond.n )
+        expr.k <- length( within.cond.n )
+        expr.n <- sum( within.cond.n )
         
-        expr.grand.mean <- rowSums( edata.fstat * within.cond.n ) / expr.n
+        expr.grand.mean <- apply( edata.fstat, 1, function( ef ) 
+            sum( ef * within.cond.n ) ) / expr.n
         
-        between.cond.var <- rowSums( ( edata.fstat - expr.grand.mean )^2 * 
-                within.cond.n ) / ( expr.k - 1 )
+        between.cond.var <- apply( ( edata.fstat - expr.grand.mean )^2, 1, 
+            function( ef2 ) sum( ef2 * within.cond.n ) ) / ( expr.k - 1 )
         
         expr.f <- between.cond.var / within.cond.var
+        
+        expr.f <- na.omit( expr.f )  # in case of 0/0
+        attr( expr.f, "na.action" ) <- NULL
         
         expr.p.value <- pf( expr.f, df1 = expr.k-1, df2 = expr.n-expr.k, 
             lower.tail = FALSE )
@@ -161,9 +166,9 @@ calculate.median.offset.probe <- function( edata, edata.fstat, within.cond.var,
     }
     
     # identify probes for normalization
-    median.probe <- intersect( h0.probe, rownames( edata ) )
+    median.probe <- h0.probe
     
-    # find median offset using only H0 probes
+    # calculate offset
     median.offset <- apply( edata[ median.probe, ], 2, quantile, 
         probs=norm.prob )
     median.offset <- median.offset - mean( median.offset )

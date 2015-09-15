@@ -31,10 +31,10 @@
 normalize.median.condec <- function( expression.data, expression.condition, 
     norm.probability=0.5, verbose=FALSE, p.value.graph=NULL )
 {
-    normalize.probe <- rownames( expression.data )
-    normalize.sample <-
+    # identify samples and conditions to normalize
+    normalize.sample <- 
         colnames( expression.data )[ ! is.na( expression.condition ) ]
-    normalize.sample.condition <-
+    normalize.sample.condition <- 
         as.character( na.omit( expression.condition ) )
     normalize.condition <- unique( normalize.sample.condition )
     
@@ -43,12 +43,18 @@ normalize.median.condec <- function( expression.data, expression.condition,
     else if ( min( table( normalize.sample.condition ) ) < 2 )
         stop( "There must be 2 or more samples in each condition" )
     
-    normalize.expr.data <- matrix( nrow = length( normalize.probe ), 
-        ncol = length( normalize.sample ) )
-    rownames( normalize.expr.data ) <- normalize.probe
-    colnames( normalize.expr.data ) <- normalize.sample
+    # select probes for normalization
+    # no missing values in any normalization sample
+    expression.probe <- rownames( expression.data )
+    normalize.probe.idx <- which( rowSums( 
+        is.na( expression.data[ , normalize.sample ] ) ) == 0 )
     
     # normalize within conditions
+
+    normalize.expr.data <- matrix( nrow = length( expression.probe ), 
+        ncol = length( normalize.sample ) )
+    rownames( normalize.expr.data ) <- expression.probe
+    colnames( normalize.expr.data ) <- normalize.sample
     
     normalize.within.cond.offset <- rep( 0, length( normalize.sample ) )
     names( normalize.within.cond.offset ) <- normalize.sample
@@ -66,8 +72,8 @@ normalize.median.condec <- function( expression.data, expression.condition,
         norm.sample.idx <- which( condition == normalize.sample.condition )
         
         within.cond.norm.result <- normalize.median.within.condition(
-            expression.data[ , sample.idx ], condition, norm.probability, 
-            verbose )
+            expression.data[ , sample.idx ], normalize.probe.idx, condition, 
+            norm.probability, verbose )
         
         normalize.expr.data[ , norm.sample.idx ] <- 
             within.cond.norm.result$data
@@ -88,8 +94,9 @@ normalize.median.condec <- function( expression.data, expression.condition,
     {
         between.cond.norm.result <- 
             normalize.median.between.condition( normalize.expr.data, 
-                normalize.condition, normalize.sample.condition, 
-                norm.probability, verbose, p.value.graph )
+                normalize.probe.idx, normalize.condition, 
+                normalize.sample.condition, norm.probability, verbose, 
+                p.value.graph )
         
         normalize.expr.data <- between.cond.norm.result$data
         
@@ -112,16 +119,11 @@ normalize.median.condec <- function( expression.data, expression.condition,
 }
 
 
-normalize.median.within.condition <- function( edata, condition, norm.prob, 
-    verbose )
+normalize.median.within.condition <- function( edata, norm.probe.idx, 
+    condition, norm.prob, verbose )
 {
     if ( verbose )
         cat( paste0( condition, "\n" ) )
-    
-    # identify probes with non-zero signal
-    norm.probe.idx <- which( rowSums( 
-        is.na( edata ) | 
-        edata < max( edata, na.rm=TRUE ) * .Machine$double.eps ) == 0 )
     
     # find median offset
     norm.median.offset <- apply( edata[ norm.probe.idx, ], 2, quantile, 
@@ -135,49 +137,36 @@ normalize.median.within.condition <- function( edata, condition, norm.prob,
 }
 
 
-normalize.median.between.condition <- function( edata, norm.cond, 
-    norm.sample.cond, norm.prob, verbose, p.value.graph )
+normalize.median.between.condition <- function( edata, norm.probe.idx, 
+    norm.cond, norm.sample.cond, norm.prob, verbose, p.value.graph )
 {
-    # filter out zero signals
-    edata[ edata < max( edata, na.rm=TRUE ) * .Machine$double.eps ] <- NA
-    
-    # identify samples available per condition and per probe
-    within.cond.n <- sapply( norm.cond, function( cond ) 
-        rowSums( ! is.na( edata[ , cond == norm.sample.cond ] ) ) )
+    # identify samples available per condition
+    within.cond.n <- as.vector( table( norm.sample.cond )[ norm.cond ] )
+    names( within.cond.n ) <- norm.cond
     
     # calculate balanced within-condition means
-    bal.mean.n <- min( table( norm.sample.cond ) )
-    
-    # select probes that have at least bal.mean.n samples in all conditions
-    norm.bal.probe.idx <- 
-        which( rowSums( within.cond.n < bal.mean.n ) == 0 )
+    bal.mean.n <- min( within.cond.n )
     
     expr.bal.mean.data <- sapply( norm.cond, function( cond ) 
-        if ( sum( cond == norm.sample.cond ) == bal.mean.n )
-            rowMeans( edata[ norm.bal.probe.idx, cond == norm.sample.cond ] )
-        else
+        if ( within.cond.n[ cond ] == bal.mean.n )
+            rowMeans( edata[ norm.probe.idx, cond == norm.sample.cond ] )
+        else  # within.cond.n[ cond ] > bal.mean.n
             rowMeans( t( apply( 
-                t( edata[ norm.bal.probe.idx, cond == norm.sample.cond ] ), 
-                2, function( ed ) sample( na.omit( ed ), bal.mean.n ) ) ) )
+                t( edata[ norm.probe.idx, cond == norm.sample.cond ] ), 
+                2, function( ed ) sample( ed, bal.mean.n ) ) ) )
     )
     
     # for F-statistic
-    # select probes that have at least 2 samples in all conditions
-    norm.probe.idx <- which( rowSums( within.cond.n < 2 ) == 0 )
-    
-    within.cond.n <- within.cond.n[ norm.probe.idx, ]
-    
     # calculate within-condition means
     expr.mean.data <- sapply( norm.cond, function( cond ) 
-        rowMeans( edata[ norm.probe.idx, cond == norm.sample.cond ], 
-            na.rm=TRUE ) )
+        rowMeans( edata[ norm.probe.idx, cond == norm.sample.cond ] ) )
     
     # calculate within-condition variances
-    within.cond.var <- sapply( norm.cond, function( cond ) 
-        apply( edata[ norm.probe.idx, cond == norm.sample.cond ], 1, var, 
-            na.rm=TRUE ) ) * ( within.cond.n - 1 )
+    within.cond.var <- sweep( sapply( norm.cond, function( cond ) 
+        apply( edata[ norm.probe.idx, cond == norm.sample.cond ], 1, var ) ), 
+        2, within.cond.n - 1, "*" )
     within.cond.var <- rowSums( within.cond.var ) / 
-        ( rowSums( within.cond.n ) - length( norm.cond ) )
+        ( sum( within.cond.n ) - length( norm.cond ) )
     
     # calculate normalization
     norm.median.result <- normalize.median.selection( expr.bal.mean.data, 
@@ -286,7 +275,8 @@ normalize.median.selection <- function( edata, edata.fstat, within.cond.var,
     if ( verbose )
         cat( "\n" )
     
-    if ( iter == iter.max )
+    if ( median.offset.accum.step < median.offset.accum.step.max && 
+            median.offset.ratio >= median.offset.single.threshold )
         stop( "no convergence in normalize.median.condec" )
     
     dimnames( norm.median.offset ) <- NULL
@@ -307,15 +297,19 @@ calculate.median.offset <- function( edata, edata.fstat, within.cond.var,
     ks.test.alpha <- 1e-3
     
     # calculate f statistics for each probe
-    expr.k <- ncol( within.cond.n )
-    expr.n <- rowSums( within.cond.n )
+    expr.k <- length( within.cond.n )
+    expr.n <- sum( within.cond.n )
     
-    expr.grand.mean <- rowSums( edata.fstat * within.cond.n ) / expr.n
+    expr.grand.mean <- apply( edata.fstat, 1, function( ef ) 
+        sum( ef * within.cond.n ) ) / expr.n
     
-    between.cond.var <- rowSums( ( edata.fstat - expr.grand.mean )^2 * 
-            within.cond.n ) / ( expr.k - 1 )
+    between.cond.var <- apply( ( edata.fstat - expr.grand.mean )^2, 1, 
+        function( ef2 ) sum( ef2 * within.cond.n ) ) / ( expr.k - 1 )
     
     expr.f <- between.cond.var / within.cond.var
+    
+    expr.f <- na.omit( expr.f )  # in case of 0/0
+    attr( expr.f, "na.action" ) <- NULL
     
     expr.p.value <- pf( expr.f, df1 = expr.k-1, df2 = expr.n-expr.k, 
         lower.tail = FALSE )
@@ -418,9 +412,9 @@ calculate.median.offset <- function( edata, edata.fstat, within.cond.var,
     }
     
     # identify probes for normalization
-    median.probe <- intersect( h0.probe, rownames( edata ) )
+    median.probe <- h0.probe
     
-    # find median offset using only H0 probes
+    # calculate offset
     median.offset <- apply( edata[ median.probe, ], 2, quantile, 
         probs=norm.prob )
     median.offset <- median.offset - mean( median.offset )

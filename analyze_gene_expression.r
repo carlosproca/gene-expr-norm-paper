@@ -48,12 +48,12 @@ stopifnot( ma.data.dir != "" )
 
 data.dir <- "data"
 
-table.dir <- "table"
+bc.variation.dir <- "bc_variation"
 boxplot.dir <- "boxplot"
+diff.expr.dir <- "diff_expr"
 p.value.dir <- "pvalue"
 stdvec.dir <- "stdvec"
-bc.variation.dir <- "bc_variation"
-diff.expr.dir <- "diff_expr"
+table.dir <- "table"
 
 
 # read experiment data
@@ -89,7 +89,7 @@ ag.control <- c(
     "Ag.CTD.3d", "Ag.CTD.7d", 
     "Ag.CTD.3d", "Ag.CTD.7d"
 )
-    
+
 cu.treatment <- c( 
     "Cu.CuNO3.EC20.3d", "Cu.CuNO3.EC20.7d", 
     "Cu.CuNO3.EC50.3d", "Cu.CuNO3.EC50.7d", 
@@ -352,6 +352,9 @@ for ( dtag in data.tag )
 
 # obtain graphs with convergence of standard vectors
 
+random.seed <- 20150101
+set.seed( random.seed )
+
 stdvec.convergence.cond <- "Ag.NM300K.EC20.3d"
 
 stdvec.convergence.condition <- ma.sample.condition
@@ -417,63 +420,54 @@ for ( dtag in data.tag )
         norm.within.cond.data <- sweep( no.norm.data, 2, 
             norm.result$within.condition.offset )
         
-        # filter out zero signals (only needed in general, not for this dataset)
-        norm.within.cond.data[ 
-            norm.within.cond.data < max( norm.within.cond.data, na.rm=TRUE ) * 
-                .Machine$double.eps ] <- NA
+        # select probes with no missing values in any normalization sample
+        # only needed in general, not for this dataset
+        norm.probe.idx <- 
+            which( rowSums( is.na( norm.within.cond.data ) ) == 0 )
         
-        # identify samples available per condition and per probe
-        norm.within.cond.n <- sapply( ma.condition, function( cond ) 
-            rowSums( ! is.na( norm.within.cond.data[ , 
-                cond == ma.sample.condition ] ) ) )
+        # identify samples available per condition
+        norm.within.cond.n <- as.vector( 
+            table( ma.sample.condition )[ ma.condition ] )
+        names( norm.within.cond.n ) <- ma.condition
         
         # calculate balanced within-condition means
-        norm.bal.mean.n <- min( table( ma.sample.condition ) )
-        
-        # select probes that have at least bal.mean.n samples in all conditions
-        norm.bal.probe.idx <- 
-            which( rowSums( norm.within.cond.n < norm.bal.mean.n ) == 0 )
+        norm.bal.mean.n <- min( norm.within.cond.n )
         
         norm.bal.within.cond.mean <- sapply( ma.condition, function( cond ) 
-            if ( sum( cond == ma.sample.condition ) == norm.bal.mean.n )
-                rowMeans( norm.within.cond.data[ norm.bal.probe.idx, 
+            if ( norm.within.cond.n[ cond ] == norm.bal.mean.n )
+                rowMeans( norm.within.cond.data[ norm.probe.idx, 
                     cond == ma.sample.condition ] )
-            else
+            else  # norm.within.cond.n[ cond ] > norm.bal.mean.n
                 rowMeans( t( apply( 
-                    t( norm.within.cond.data[ norm.bal.probe.idx, 
+                    t( norm.within.cond.data[ norm.probe.idx, 
                         cond == ma.sample.condition ] ), 
-                    2, function( ed ) sample( na.omit( ed ), norm.bal.mean.n ) 
-                ) ) )
+                    2, function( ed ) sample( ed, norm.bal.mean.n ) ) ) )
         )
         
         # for F-statistic
-        # select probes that have at least 2 samples in all conditions
-        norm.probe.idx <- 
-            which( rowSums( norm.within.cond.n < 2 ) == 0 )
-        
-        norm.within.cond.n <- norm.within.cond.n[ norm.probe.idx, ]
-        
         # calculate within-condition means
         norm.within.cond.mean <- sapply( ma.condition, function( cond ) 
             rowMeans( norm.within.cond.data[ norm.probe.idx, 
-                cond == ma.sample.condition ], 
-                na.rm=TRUE ) )
+                cond == ma.sample.condition ] ) )
+        
         norm.within.cond.grand.mean <- colMeans( norm.within.cond.mean )
         
         # calculate within-condition variances
-        norm.within.cond.var <- sapply( ma.condition, function( cond ) 
+        norm.within.cond.var <- sweep( sapply( ma.condition, function( cond ) 
             apply( norm.within.cond.data[ norm.probe.idx, 
-                cond == ma.sample.condition ], 1, var, na.rm=TRUE )
-        ) * ( norm.within.cond.n - 1 )
+                cond == ma.sample.condition ], 1, var ) ), 
+            2, norm.within.cond.n - 1, "*" )
         norm.within.cond.var <- rowSums( norm.within.cond.var ) / 
-                ( rowSums( norm.within.cond.n ) - ma.condition.num )
+            ( sum( norm.within.cond.n ) - length( ma.condition.num ) )
         
         # calculate within-condition medians
-        norm.within.cond.median <- apply( norm.within.cond.data, 2, 
-            median, na.rm=TRUE )
+        norm.within.cond.median <- apply( 
+            norm.within.cond.data[ norm.probe.idx, ], 2, median )
+        
         norm.within.cond.median.mean <- sapply( ma.condition, function( cond ) 
             mean( norm.within.cond.median[ cond == ma.sample.condition ] ) )
         
+        # iterate over random yes/no and then by number of probes
         for ( h0p.random in c( TRUE, FALSE ) )
         {
             norm.h0p.method <- paste0( nmeth, 
@@ -658,7 +652,7 @@ diff.expr.contrast <- mapply( function( t, c ) {
 }, ma.treatment, ma.control )
 rownames( diff.expr.contrast ) <- ma.condition
 
-# iterate over stat methods and then over normalizations
+# iterate over differential expression methods and then over normalizations
 
 for ( demeth in diff.expr.method )
 {
