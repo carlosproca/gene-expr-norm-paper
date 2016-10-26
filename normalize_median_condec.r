@@ -1,5 +1,5 @@
-# Copyright (c) 2015, Universitat Rovira i Virgili (Spain), University of 
-# Aveiro (Portugal) & Aarhus University (Denmark)
+# Copyright (c) 2016, Universitat Rovira i Virgili (Spain), Aarhus University 
+# (Denmark) and University of Aveiro (Portugal)
 # 
 # Written by Carlos P. Roca
 # as Research funded by the European Union
@@ -29,7 +29,9 @@
 
 
 normalize.median.condec <- function( expression.data, expression.condition, 
-    norm.probability=0.5, verbose=FALSE, p.value.graph=NULL )
+    normalize.probe=NULL, convergence.threshold = c( 0.001, 0.1 ), 
+    search.h0.probe=TRUE, norm.probability=0.5, p.value.graph=NULL, 
+    verbose=FALSE )
 {
     # identify samples and conditions to normalize
     normalize.sample <- 
@@ -39,15 +41,28 @@ normalize.median.condec <- function( expression.data, expression.condition,
     normalize.condition <- unique( normalize.sample.condition )
     
     if ( length( normalize.condition ) == 0 )
-        stop( "No condition to normalize" )
+        stop( "No condition to normalize in normalize.median.condec" )
     else if ( min( table( normalize.sample.condition ) ) < 2 )
-        stop( "There must be 2 or more samples in each condition" )
+        stop( "There must be 2 or more samples for each condition in normalize.median.condec" )
     
     # select probes for normalization
-    # no missing values in any normalization sample
     expression.probe <- rownames( expression.data )
-    normalize.probe.idx <- which( rowSums( 
+    
+    if ( is.null( normalize.probe ) )
+        normalize.probe.idx <- 1 : length( expression.probe )
+    else
+    {
+        normalize.probe.idx <- match( normalize.probe, expression.probe )
+        if ( any( is.na( normalize.probe.idx ) ) )
+            stop( "Bad normalize.probe argument in normalize.median.condec" )
+    }
+    
+    # enforce no missing values in any normalization sample
+    all.sample.probe.idx <- which( rowSums( 
         is.na( expression.data[ , normalize.sample ] ) ) == 0 )
+    
+    normalize.probe.idx <- 
+        intersect( normalize.probe.idx, all.sample.probe.idx )
     
     # normalize within conditions
 
@@ -59,10 +74,6 @@ normalize.median.condec <- function( expression.data, expression.condition,
     normalize.within.cond.offset <- rep( 0, length( normalize.sample ) )
     names( normalize.within.cond.offset ) <- normalize.sample
     
-    normalize.within.cond.convergence <- vector( "list", 
-        length( normalize.condition ) )
-    names( normalize.within.cond.convergence ) <- normalize.condition
-    
     condition.sample.idx <- split( 1 : length( expression.condition ), 
         expression.condition )
     
@@ -71,61 +82,70 @@ normalize.median.condec <- function( expression.data, expression.condition,
         condition <- as.character( expression.condition[ sample.idx[ 1 ] ] )
         norm.sample.idx <- which( condition == normalize.sample.condition )
         
-        within.cond.norm.result <- normalize.median.within.condition(
-            expression.data[ , sample.idx ], normalize.probe.idx, condition, 
+        within.cond.norm.result <- normalize.median.within.condition( 
+            expression.data[ , sample.idx ], condition, normalize.probe.idx, 
             norm.probability, verbose )
         
-        normalize.expr.data[ , norm.sample.idx ] <- 
-            within.cond.norm.result$data
+        normalize.expr.data[ , norm.sample.idx ] <- within.cond.norm.result$data
         
         normalize.within.cond.offset[ norm.sample.idx ] <- 
             within.cond.norm.result$offset
     }
     
+    if ( length( normalize.condition ) == 1 )
+    {
+        # no additional normalization needed
+        normalize.offset <- normalize.within.cond.offset[ normalize.sample ]
+        
+        normalize.result <- list( data = normalize.expr.data, 
+            offset = normalize.offset )
+        
+        return( normalize.result )
+    }
+    
     # normalize between conditions
     
-    normalize.between.cond.offset <- rep( 0, length( normalize.condition ) )
-    names( normalize.between.cond.offset ) <- normalize.condition
+    between.cond.norm.result <- normalize.median.between.condition( 
+        normalize.expr.data, normalize.condition, normalize.sample.condition, 
+        normalize.probe.idx, convergence.threshold, search.h0.probe, 
+        norm.probability, p.value.graph, verbose )
     
-    normalize.between.cond.h0.probe <- NULL
-    normalize.between.cond.convergence <- NULL
+    normalize.expr.data <- between.cond.norm.result$data
+    normalize.between.cond.offset <- between.cond.norm.result$offset
     
-    if ( length( normalize.condition ) > 1 )
+    if ( search.h0.probe )
     {
-        between.cond.norm.result <- 
-            normalize.median.between.condition( normalize.expr.data, 
-                normalize.probe.idx, normalize.condition, 
-                normalize.sample.condition, norm.probability, verbose, 
-                p.value.graph )
-        
-        normalize.expr.data <- between.cond.norm.result$data
-        
-        normalize.between.cond.offset <- between.cond.norm.result$offset
-        
         normalize.between.cond.h0.probe <- between.cond.norm.result$h0.probe
-        
-        normalize.between.cond.convergence <-
-            between.cond.norm.result$convergence
+        normalize.between.cond.h0.probe.convergence <- 
+            between.cond.norm.result$h0.probe.convergence
     }
     
     normalize.offset <- normalize.within.cond.offset[ normalize.sample ] + 
         normalize.between.cond.offset[ normalize.sample.condition ]
     
-    list( data = normalize.expr.data, offset = normalize.offset, 
+    normalize.result <- list( data = normalize.expr.data, 
+        offset = normalize.offset, 
         within.condition.offset = normalize.within.cond.offset, 
-        between.condition.offset = normalize.between.cond.offset, 
-        between.condition.h0.probe = normalize.between.cond.h0.probe, 
-        between.condition.convergence = normalize.between.cond.convergence )
+        between.condition.offset = normalize.between.cond.offset )
+    
+    if ( search.h0.probe )
+    {
+        normalize.result$h0.probe <- normalize.between.cond.h0.probe
+        normalize.result$h0.probe.convergence <- 
+            normalize.between.cond.h0.probe.convergence
+    }
+    
+    normalize.result
 }
 
 
-normalize.median.within.condition <- function( edata, norm.probe.idx, 
-    condition, norm.prob, verbose )
+normalize.median.within.condition <- function( edata, condition, 
+    norm.probe.idx, norm.prob, verbose )
 {
     if ( verbose )
         cat( paste0( condition, "\n" ) )
     
-    # find median offset
+    # calculate normalization
     norm.median.offset <- apply( edata[ norm.probe.idx, ], 2, quantile, 
         probs=norm.prob )
     norm.median.offset <- norm.median.offset - mean( norm.median.offset )
@@ -133,12 +153,15 @@ normalize.median.within.condition <- function( edata, norm.probe.idx,
     # normalize with obtained offset
     edata <- sweep( edata, 2, norm.median.offset )
     
-    list( data = edata, offset = norm.median.offset )
+    norm.within.cond.result <- list( data = edata, offset = norm.median.offset )
+    
+    norm.within.cond.result
 }
 
 
-normalize.median.between.condition <- function( edata, norm.probe.idx, 
-    norm.cond, norm.sample.cond, norm.prob, verbose, p.value.graph )
+normalize.median.between.condition <- function( edata, norm.cond, 
+    norm.sample.cond, norm.probe.idx, convergence.threshold, search.h0.probe, 
+    norm.prob, p.value.graph, verbose )
 {
     # identify samples available per condition
     within.cond.n <- as.vector( table( norm.sample.cond )[ norm.cond ] )
@@ -156,66 +179,93 @@ normalize.median.between.condition <- function( edata, norm.probe.idx,
                 2, function( ed ) sample( ed, bal.mean.n ) ) ) )
     )
     
-    # for F-statistic
-    # calculate within-condition means
-    expr.mean.data <- sapply( norm.cond, function( cond ) 
-        rowMeans( edata[ norm.probe.idx, cond == norm.sample.cond ] ) )
+    if ( search.h0.probe )
+    {
+        # calculate normalization while looking for h0 probes
+        
+        # calculate within-condition means for F-statistic
+        expr.mean.data <- sapply( norm.cond, function( cond ) 
+            rowMeans( edata[ norm.probe.idx, cond == norm.sample.cond ] ) )
+        
+        # calculate within-condition variances for F-statistic
+        within.cond.var <- sweep( sapply( norm.cond, function( cond ) 
+            apply( edata[ norm.probe.idx, cond == norm.sample.cond ], 1, var ) ), 
+            2, within.cond.n - 1, "*" )
+        within.cond.var <- rowSums( within.cond.var ) / 
+            ( sum( within.cond.n ) - length( norm.cond ) )
+        
+        if ( verbose )
+            cat( "between.condition.search.h0.probe\n" )
+        
+        norm.median.search.h0.probe.result <- normalize.median.selection( 
+            expr.bal.mean.data, convergence.threshold, expr.mean.data, 
+            within.cond.var, within.cond.n, norm.prob, p.value.graph, verbose )
+        
+        h0.probe <- norm.median.search.h0.probe.result$h0.probe
+        h0.probe.convergence <- norm.median.search.h0.probe.result$convergence
+        
+        norm.probe <- h0.probe
+    }
+    else
+        # uses all probes given by norm.probe.idx for normalization
+        norm.probe <- rownames( expr.bal.mean.data )
     
-    # calculate within-condition variances
-    within.cond.var <- sweep( sapply( norm.cond, function( cond ) 
-        apply( edata[ norm.probe.idx, cond == norm.sample.cond ], 1, var ) ), 
-        2, within.cond.n - 1, "*" )
-    within.cond.var <- rowSums( within.cond.var ) / 
-        ( sum( within.cond.n ) - length( norm.cond ) )
-    
+    if ( verbose )
+        cat( "between.condition\n" )
+
     # calculate normalization
-    norm.median.result <- normalize.median.selection( expr.bal.mean.data, 
-        expr.mean.data, within.cond.var, within.cond.n, norm.prob, verbose, 
-        p.value.graph )
+    norm.median.offset <- apply( expr.bal.mean.data[ norm.probe, ], 2, 
+        quantile, probs=norm.prob )
+    norm.median.offset <- norm.median.offset - mean( norm.median.offset )
     
-    # normalize each condition with its offset
+    # normalize each condition with obtained offset
     for( cond in norm.cond )
-        edata[ , cond == norm.sample.cond ] <-
-            edata[ , cond == norm.sample.cond ] - 
-            norm.median.result$offset[ cond ]
+        edata[ , cond == norm.sample.cond ] <- 
+            edata[ , cond == norm.sample.cond ] - norm.median.offset[ cond ]
     
-    list( data = edata, offset = norm.median.result$offset, 
-        h0.probe = norm.median.result$h0.probe, 
-        convergence = norm.median.result$convergence )
+    norm.between.cond.result <- list( data = edata, 
+        offset = norm.median.offset )
+    
+    if( search.h0.probe )
+    {
+        norm.between.cond.result$h0.probe <- h0.probe
+        norm.between.cond.result$h0.probe.convergence <- h0.probe.convergence
+    }
+    
+    norm.between.cond.result
 }
 
 
-normalize.median.selection <- function( edata, edata.fstat, within.cond.var, 
-    within.cond.n, norm.prob, verbose, p.value.graph )
+normalize.median.selection <- function( edata, convergence.threshold, 
+    edata.fstat, within.cond.var, within.cond.n, norm.prob, p.value.graph, 
+    verbose )
 {
-    iter.max <- 100
-    median.offset.accum.step.max <- 10
-    median.offset.accum.threshold <- 0.1
-    median.offset.single.threshold <- 0.01
+    iter.max <- 200
+    single.threshold <- convergence.threshold[ 1 ]
+    accum.threshold <- convergence.threshold[ 2 ]
+    offset.accum.step.threshold <- 10
+    common.h0.probe.accum.step.max <- 10
+    
+    median.offset <- rep( 0, ncol( edata ) )
+    
+    norm.median.offset <- matrix( nrow=0, ncol = ncol( edata ) )
+    norm.median.offset.sd <- vector( "numeric" )
+    norm.median.offset.delta.sd <- vector( "numeric" )
+    norm.median.offset.accum.step <- vector( "numeric" )
+    norm.median.common.h0.probe.accum.step <- vector( "numeric" )
+    norm.median.h0.probe.num <- vector( "numeric" )
+    norm.median.common.h0.probe.num <- vector( "numeric" )
     
     last.norm.data <- edata
     last.norm.data.fstat <- edata.fstat
     
-    last.median.offset <- vector( "numeric" )
-    last.median.h0.probe <- vector( "character" )
-    
-    norm.median.offset <- matrix( nrow=0, ncol = ncol( edata ) )
-    norm.median.offset.ratio <- vector( "numeric" )
-    norm.median.offset.accum.step <- vector( "numeric" )
-    norm.median.h0.probe.num <- vector( "numeric" )
-
-    median.offset <- rep( 0, ncol( edata ) )
-    
-    if ( verbose )
-        cat( paste0( "between.condition\n" ) )
+    median.offset.accum.step <- 0
+    median.common.h0.probe.accum.step <- 0
     
     iter <- 0
-    median.offset.accum.step <- 0
-    median.offset.ratio <- 1
+    overall.convergence <- FALSE
     
-    while ( iter < iter.max && 
-        median.offset.accum.step < median.offset.accum.step.max &&
-        median.offset.ratio >= median.offset.single.threshold )
+    while ( iter < iter.max && ! overall.convergence )
     {
         iter <- iter + 1
         
@@ -225,8 +275,8 @@ normalize.median.selection <- function( edata, edata.fstat, within.cond.var,
             p.value.graph, iter )
         
         median.offset.delta <- median.offset.step$value
-        median.h0.probe <- median.offset.step$h0.probe
         
+        median.h0.probe <- median.offset.step$h0.probe
         median.h0.probe.num <- length( median.h0.probe )
         
         # check errors
@@ -239,55 +289,98 @@ normalize.median.selection <- function( edata, edata.fstat, within.cond.var,
         
         # update data at once with total offset
         last.norm.data <- sweep( edata, 2, median.offset )
-        if ( ! is.null( edata.fstat ) )
-            last.norm.data.fstat <- sweep( edata.fstat, 2, median.offset )
+        last.norm.data.fstat <- sweep( edata.fstat, 2, median.offset )
         
         # check convergence
         median.offset.sd <- sd( median.offset )
         median.offset.delta.sd <- sd( median.offset.delta )
         
-        median.offset.ratio <- median.offset.delta.sd / median.offset.sd
+        median.offset.delta.sd.ratio <- ifelse( median.offset.sd > 0, 
+            median.offset.delta.sd / median.offset.sd, 1 )
         
-        if ( median.offset.ratio < median.offset.accum.threshold )
-            median.offset.accum.step <- median.offset.accum.step + 1
+        if ( median.offset.delta.sd == 0 )
+            median.offset.ratio <- 0
+        else if ( median.offset.sd == 0 )
+            median.offset.ratio <- 1
         else
-            median.offset.accum.step <- 0
+            median.offset.ratio <- median.offset.delta.sd / median.offset.sd
+        
+        median.offset.accum.step <- ifelse( 
+            median.offset.ratio < accum.threshold, 
+            median.offset.accum.step + 1, 0 )
+        
+        median.convergence <- median.offset.ratio < single.threshold || 
+            median.offset.accum.step > offset.accum.step.threshold
+        
+        median.common.h0.probe.accum.step <- ifelse( median.convergence, 
+            median.common.h0.probe.accum.step + 1, 0 )
+        
+        overall.convergence <- median.common.h0.probe.accum.step >= 
+            common.h0.probe.accum.step.max
         
         # store last results
         last.median.offset <- median.offset
-        last.median.h0.probe <- median.h0.probe
+        
+        if ( median.common.h0.probe.accum.step == 0 )
+            median.common.h0.probe <- NULL
+        else if ( median.common.h0.probe.accum.step == 1 )
+            median.common.h0.probe <- median.h0.probe
+        else
+            median.common.h0.probe <- intersect( median.h0.probe, 
+                median.common.h0.probe )
+        
+        median.common.h0.probe.num <- ifelse( 
+            is.null( median.common.h0.probe ), NA, 
+            length( median.common.h0.probe ) )
         
         # store step results
         norm.median.offset <- rbind( norm.median.offset, median.offset )
-        norm.median.offset.ratio <- c( norm.median.offset.ratio, 
-            median.offset.ratio )
+        norm.median.offset.sd <- c( norm.median.offset.sd, median.offset.sd )
+        norm.median.offset.delta.sd <- c( norm.median.offset.delta.sd, 
+            median.offset.delta.sd )
         norm.median.offset.accum.step <- c( norm.median.offset.accum.step, 
             median.offset.accum.step )
+        norm.median.common.h0.probe.accum.step <- 
+            c( norm.median.common.h0.probe.accum.step, 
+                median.common.h0.probe.accum.step )
         norm.median.h0.probe.num <- c( norm.median.h0.probe.num, 
             median.h0.probe.num )
+        norm.median.common.h0.probe.num <- c( norm.median.common.h0.probe.num, 
+            median.common.h0.probe.num )
         
         if ( verbose )
-            cat( sprintf( "  %2d %g %g %02d %d\n", iter, median.offset.sd, 
-                median.offset.ratio, median.offset.accum.step, 
+        {
+            cat( sprintf( "  %2d %g %g %02d %02d %d", iter, 
+                median.offset.sd, median.offset.delta.sd.ratio, 
+                median.offset.accum.step, median.common.h0.probe.accum.step, 
                 median.h0.probe.num ) )
+            
+            if ( ! is.na( median.common.h0.probe.num ) )
+                cat( paste0( " ", median.common.h0.probe.num ) )
+            
+            cat( "\n" )
+        }
     }
     
-    if ( verbose )
-        cat( "\n" )
+    if ( ! overall.convergence )
+        stop( "No convergence in normalize.median.condec" )
     
-    if ( median.offset.accum.step < median.offset.accum.step.max && 
-            median.offset.ratio >= median.offset.single.threshold )
-        stop( "no convergence in normalize.median.condec" )
-    
+    # remove sample or condition names from step results
     dimnames( norm.median.offset ) <- NULL
     
     norm.median.convergence <- list( offset = norm.median.offset, 
-        offset.ratio = norm.median.offset.ratio, 
+        offset.sd = norm.median.offset.sd, 
+        offset.delta.sd = norm.median.offset.delta.sd, 
         offset.accum.step = norm.median.offset.accum.step, 
-        h0.probe.num = norm.median.h0.probe.num )
+        common.h0.probe.accum.step = norm.median.common.h0.probe.accum.step, 
+        h0.probe.num = norm.median.h0.probe.num, 
+        common.h0.probe.num = norm.median.common.h0.probe.num )
     
-    list( offset = last.median.offset, h0.probe = last.median.h0.probe, 
-        convergence = norm.median.convergence )
+    norm.median.result <- list( offset = last.median.offset, 
+        convergence = norm.median.convergence, 
+        h0.probe = median.common.h0.probe )
+    
+    norm.median.result
 }
 
 
@@ -314,7 +407,7 @@ calculate.median.offset <- function( edata, edata.fstat, within.cond.var,
     expr.p.value <- pf( expr.f, df1 = expr.k-1, df2 = expr.n-expr.k, 
         lower.tail = FALSE )
     
-    # identify H0 probes with one-sided up Kolmogorov-Smirnov test
+    # identify h0 probes with one-sided up Kolmogorov-Smirnov test
     ks.test.d <- sqrt( - log( ks.test.alpha ) / 2 )
     
     epv <- sort( expr.p.value )
@@ -358,13 +451,13 @@ calculate.median.offset <- function( edata, edata.fstat, within.cond.var,
             png.filename <- sprintf( "%s/pvalue_iter%02d.png", 
                 p.value.graph, iter )
             
-            png( png.filename, width=640, height=360 )
+            png( png.filename, width=1280, height=720 )
         }
         
         par.default <- par( no.readonly=TRUE )
         
-        par( mfrow = c(1,2), pty="s", xpd=FALSE, 
-            mar = c( 3.4, 2.2, 2.2, 2.2 ), oma = c( 0, 3.8, 0, 0 ) )
+        par( mfrow = c(1,2), pty="s", mar = c( 3.4, 4.0, 0, 1.6 ), 
+            oma = c( 0, 4.2, 3.4, 0 ), mgp = c( 4.0, 1.2, 0 ) )
         
         epv.quant <- 1:epv.n / epv.n
         epv.h0.idx <- epv.h0.i : epv.n
@@ -379,31 +472,28 @@ calculate.median.offset <- function( edata, edata.fstat, within.cond.var,
         {
             plot( 0, type="n", 
                 xlim = c( xylim[[i]][1], 1 ), ylim = c( xylim[[i]][2], 1 ), 
-                xlab="p-value", ylab="", cex.axis=1.3, cex.lab=1.5 )
+                xlab="p-value", ylab="", cex.axis=2.5, cex.lab=2.5 )
             
             segments( x0 = c( 0, epv[ - epv.h0.idx ] ), 
                 y0 = c( 0, epv.quant[ - epv.h0.idx ] ), 
                 x1 = c( epv[ - epv.h0.idx ], epv[ epv.h0.idx ][ 1 ] ), 
-                lwd=2 )
+                lwd=2.5, col="black" )
             segments( x0 = epv[ epv.h0.idx ], y0 = epv.quant[ epv.h0.idx ], 
-                x1 = c( epv[ epv.h0.idx ][ -1 ], 1 ), lwd=2, col="red" )
-            points( epv.h0.p, epv.h0.q, pch=20, cex=2.5 )
+                x1 = c( epv[ epv.h0.idx ][ -1 ], 1 ), lwd=2.5, col="red" )
+            points( epv.h0.p, epv.h0.q, pch=20, cex=3 )
             
-            segments( 0, 1 - pi0.est, 1, 1, col="blue", lwd=1.5, lty=2 )
-            segments( 0, 1 - pi0.est + epv.yd, 1, 1 + epv.yd, col="blue", 
-                lwd=1.5, lty=3 )
-            
-            if ( i==1 )
-                graph.title <- sprintf( "iter=%02d", iter )
-            else
-                graph.title <- substitute( paste( "#", H[0], "=", h0.n ), 
-                    list( h0.n = sprintf( "%5d", epv.h0.n ) ) )
-            
-            title( main=graph.title, line = ifelse( i==1, 1.4, 1.75 ), 
-                font.main=1, cex.main=1.7 )
+            segments( 0, 1 - pi0.est, 1, 1, lwd=2, lty=2, col="blue" )
+            segments( 0, 1 - pi0.est + epv.yd, 1, 1 + epv.yd, lwd=2, lty=3, 
+                col="blue" )
         }
         
-        mtext( "F( p-value )", side=2, line=1.3, outer=TRUE, cex=1.5 )
+        mtext( "F( p-value )", side=2, line=1.0, outer=TRUE, cex=2.5 )
+        
+        graph.title <- substitute( 
+            paste( "iter=", iter, "    -    #", H[0], "=", h0.n ), 
+            list( iter = sprintf( "%02d", iter ), 
+                h0.n = sprintf( "%5d", epv.h0.n ) ) )
+        mtext( graph.title, 3, line=-1.2, outer=TRUE, cex=2.7 )
         
         if ( p.value.graph != "" )
             dev.off()
@@ -411,14 +501,12 @@ calculate.median.offset <- function( edata, edata.fstat, within.cond.var,
             par( par.default )
     }
     
-    # identify probes for normalization
-    median.probe <- h0.probe
-    
     # calculate offset
-    median.offset <- apply( edata[ median.probe, ], 2, quantile, 
-        probs=norm.prob )
+    median.offset <- apply( edata[ h0.probe, ], 2, quantile, probs=norm.prob )
     median.offset <- median.offset - mean( median.offset )
     
-    list( value = median.offset, h0.probe = h0.probe )
+    median.result <- list( value = median.offset, h0.probe = h0.probe )
+    
+    median.result
 }
 

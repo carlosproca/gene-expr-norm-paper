@@ -1,5 +1,5 @@
-# Copyright (c) 2015, Universitat Rovira i Virgili (Spain), University of 
-# Aveiro (Portugal) & Aarhus University (Denmark)
+# Copyright (c) 2016, Universitat Rovira i Virgili (Spain), Aarhus University 
+# (Denmark) and University of Aveiro (Portugal)
 # 
 # Written by Carlos P. Roca
 # as Research funded by the European Union
@@ -29,7 +29,8 @@
 
 
 normalize.stdvec.condec <- function( expression.data, expression.condition, 
-    verbose=FALSE, vector.graph=NULL, p.value.graph=NULL )
+    normalize.probe=NULL, convergence.threshold = c( 0.01, 0.1, 0.01, 1 ), 
+    search.h0.probe=TRUE, vector.graph=NULL, p.value.graph=NULL, verbose=FALSE )
 {
     # identify samples and conditions to normalize
     normalize.sample <- 
@@ -39,15 +40,28 @@ normalize.stdvec.condec <- function( expression.data, expression.condition,
     normalize.condition <- unique( normalize.sample.condition )
     
     if ( length( normalize.condition ) == 0 )
-        stop( "No condition to normalize" )
+        stop( "No condition to normalize in normalize.stdvec.condec" )
     else if ( min( table( normalize.sample.condition ) ) < 2 )
-        stop( "There must be 2 or more samples in each condition" )
+        stop( "There must be 2 or more samples for each condition in normalize.stdvec.condec" )
     
     # select probes for normalization
-    # no missing values in any normalization sample
     expression.probe <- rownames( expression.data )
-    normalize.probe.idx <- which( rowSums( 
+    
+    if ( is.null( normalize.probe ) )
+        normalize.probe.idx <- 1 : length( expression.probe )
+    else
+    {
+        normalize.probe.idx <- match( normalize.probe, expression.probe )
+        if ( any( is.na( normalize.probe.idx ) ) )
+            stop( "Bad normalize.probe argument in normalize.stdvec.condec" )
+    }
+    
+    # enforce no missing values in any normalization sample
+    all.sample.probe.idx <- which( rowSums( 
         is.na( expression.data[ , normalize.sample ] ) ) == 0 )
+    
+    normalize.probe.idx <- 
+        intersect( normalize.probe.idx, all.sample.probe.idx )
     
     # normalize within conditions
     
@@ -71,75 +85,95 @@ normalize.stdvec.condec <- function( expression.data, expression.condition,
         condition <- as.character( expression.condition[ sample.idx[ 1 ] ] )
         norm.sample.idx <- which( condition == normalize.sample.condition )
         
-        within.cond.norm.result <- normalize.stdvec.within.condition( 
-            expression.data[ , sample.idx ], normalize.probe.idx, condition, 
-            verbose, vector.graph )
+        within.cond.norm.result <- normalize.stdvec.within.condition(
+            expression.data[ , sample.idx ], condition, normalize.probe.idx, 
+            convergence.threshold, vector.graph, verbose )
         
-        normalize.expr.data[ , norm.sample.idx ] <- 
-            within.cond.norm.result$data
+        normalize.expr.data[ , norm.sample.idx ] <- within.cond.norm.result$data
         
-        normalize.within.cond.offset[ norm.sample.idx ] <- 
+        normalize.within.cond.offset[ norm.sample.idx ] <-
             within.cond.norm.result$offset
         
-        normalize.within.cond.convergence[[ condition ]] <- 
+        normalize.within.cond.convergence[[ condition ]] <-
             within.cond.norm.result$convergence
+    }
+    
+    # remove condition names from convergence data
+    names( normalize.within.cond.convergence ) <- NULL
+    
+    if ( length( normalize.condition ) == 1 )
+    {
+        # no additional normalization needed
+        normalize.offset <- normalize.within.cond.offset[ normalize.sample ]
+        
+        normalize.result <- list( data = normalize.expr.data, 
+            offset = normalize.offset, 
+            convergence = normalize.within.cond.convergence )
+        
+        return( normalize.result )
     }
     
     # normalize between conditions
     
-    normalize.between.cond.offset <- rep( 0, length( normalize.condition ) )
-    names( normalize.between.cond.offset ) <- normalize.condition
+    between.cond.norm.result <- normalize.stdvec.between.condition( 
+        normalize.expr.data, normalize.condition, normalize.sample.condition, 
+        normalize.probe.idx, convergence.threshold, search.h0.probe, 
+        vector.graph, p.value.graph, verbose )
     
-    normalize.between.cond.h0.probe <- NULL
-    normalize.between.cond.convergence <- NULL
+    normalize.expr.data <- between.cond.norm.result$data
+    normalize.between.cond.offset <- between.cond.norm.result$offset
+    normalize.between.cond.convergence <- between.cond.norm.result$convergence
     
-    if ( length( normalize.condition ) > 1 )
+    if ( search.h0.probe )
     {
-        between.cond.norm.result <- 
-            normalize.stdvec.between.condition( normalize.expr.data, 
-                normalize.probe.idx, normalize.condition, 
-                normalize.sample.condition, verbose, vector.graph, 
-                p.value.graph )
-        
-        normalize.expr.data <- between.cond.norm.result$data
-        
-        normalize.between.cond.offset <- between.cond.norm.result$offset
-        
         normalize.between.cond.h0.probe <- between.cond.norm.result$h0.probe
-        
-        normalize.between.cond.convergence <-
-            between.cond.norm.result$convergence
+        normalize.between.cond.h0.probe.convergence <- 
+            between.cond.norm.result$h0.probe.convergence
     }
     
     normalize.offset <- normalize.within.cond.offset[ normalize.sample ] + 
         normalize.between.cond.offset[ normalize.sample.condition ]
     
-    list( data = normalize.expr.data, offset = normalize.offset, 
+    normalize.result <- list( data = normalize.expr.data, 
+        offset = normalize.offset, 
         within.condition.offset = normalize.within.cond.offset, 
         between.condition.offset = normalize.between.cond.offset, 
-        between.condition.h0.probe = normalize.between.cond.h0.probe, 
         within.condition.convergence = normalize.within.cond.convergence, 
         between.condition.convergence = normalize.between.cond.convergence )
+    
+    if ( search.h0.probe )
+    {
+        normalize.result$h0.probe <- normalize.between.cond.h0.probe
+        normalize.result$h0.probe.convergence <- 
+            normalize.between.cond.h0.probe.convergence
+    }
+    
+    normalize.result
 }
 
 
-normalize.stdvec.within.condition <- function( edata, norm.probe.idx, 
-    condition, verbose, vector.graph )
+normalize.stdvec.within.condition <- function( edata, condition, 
+    norm.probe.idx, convergence.threshold, vector.graph, verbose )
 {
     # calculate normalization
     norm.stdvec.result <- normalize.standard.vector( edata[ norm.probe.idx, ], 
-        NULL, NULL, NULL, condition, verbose, vector.graph, NULL )
+        condition, convergence.threshold, FALSE, NULL, NULL, NULL, 
+        vector.graph, NULL, verbose )
     
     # normalize with obtained offset
     edata <- sweep( edata, 2, norm.stdvec.result$offset )
     
-    list( data = edata, offset = norm.stdvec.result$offset, 
+    norm.within.cond.result <- list( data = edata, 
+        offset = norm.stdvec.result$offset, 
         convergence = norm.stdvec.result$convergence )
+    
+    norm.within.cond.result
 }
 
 
-normalize.stdvec.between.condition <- function( edata, norm.probe.idx, 
-    norm.cond, norm.sample.cond, verbose, vector.graph, p.value.graph )
+normalize.stdvec.between.condition <- function( edata, norm.cond, 
+    norm.sample.cond, norm.probe.idx, convergence.threshold, search.h0.probe, 
+    vector.graph, p.value.graph, verbose )
 {
     # identify samples available per condition
     within.cond.n <- as.vector( table( norm.sample.cond )[ norm.cond ] )
@@ -157,49 +191,92 @@ normalize.stdvec.between.condition <- function( edata, norm.probe.idx,
                 2, function( ed ) sample( ed, bal.mean.n ) ) ) )
     )
     
-    # for F-statistic
-    # calculate within-condition means
-    expr.mean.data <- sapply( norm.cond, function( cond ) 
-        rowMeans( edata[ norm.probe.idx, cond == norm.sample.cond ] ) )
-    
-    # calculate within-condition variances
-    within.cond.var <- sweep( sapply( norm.cond, function( cond ) 
-        apply( edata[ norm.probe.idx, cond == norm.sample.cond ], 1, var ) ), 
-        2, within.cond.n - 1, "*" )
-    within.cond.var <- rowSums( within.cond.var ) / 
-        ( sum( within.cond.n ) - length( norm.cond ) )
-    
+    if ( search.h0.probe )
+    {
+        # calculate normalization while looking for h0 probes
+        
+        # calculate within-condition means for F-statistic
+        expr.mean.data <- sapply( norm.cond, function( cond ) 
+            rowMeans( edata[ norm.probe.idx, cond == norm.sample.cond ] ) )
+        
+        # calculate within-condition variances for F-statistic
+        within.cond.var <- sweep( sapply( norm.cond, function( cond ) 
+            apply( edata[ norm.probe.idx, cond == norm.sample.cond ], 1, var ) ), 
+            2, within.cond.n - 1, "*" )
+        within.cond.var <- rowSums( within.cond.var ) / 
+            ( sum( within.cond.n ) - length( norm.cond ) )
+        
+        if ( ! is.null( vector.graph ) && vector.graph != "" )
+            vector.graph.h0.probe <- paste0( vector.graph, ".h0.probe" )
+        else
+            vector.graph.h0.probe <- vector.graph
+        
+        norm.stdvec.search.h0.probe.result <- normalize.standard.vector( 
+            expr.bal.mean.data, "between.condition.search.h0.probe", 
+            convergence.threshold, TRUE, expr.mean.data, within.cond.var, 
+            within.cond.n, vector.graph.h0.probe, p.value.graph, verbose )
+        
+        h0.probe <- norm.stdvec.search.h0.probe.result$h0.probe
+        h0.probe.convergence <- norm.stdvec.search.h0.probe.result$convergence
+        
+        norm.probe <- h0.probe
+    }
+    else
+        # uses all probes given by norm.probe.idx for normalization
+        norm.probe <- rownames( expr.bal.mean.data )
+
     # calculate normalization
-    norm.stdvec.result <- normalize.standard.vector( expr.bal.mean.data, 
-        expr.mean.data, within.cond.var, within.cond.n, "between.condition", 
-        verbose, vector.graph, p.value.graph )
+    norm.stdvec.result <- normalize.standard.vector( 
+        expr.bal.mean.data[ norm.probe, ], "between.condition", 
+        convergence.threshold, FALSE, NULL, NULL, NULL, vector.graph, NULL, 
+        verbose )
     
-    # normalize each condition with its offset
+    # normalize each condition with obtained offset
     for( cond in norm.cond )
-        edata[ , cond == norm.sample.cond ] <-
+        edata[ , cond == norm.sample.cond ] <- 
             edata[ , cond == norm.sample.cond ] - 
             norm.stdvec.result$offset[ cond ]
     
-    list( data = edata, offset = norm.stdvec.result$offset, 
-        h0.probe = norm.stdvec.result$h0.probe, 
+    norm.between.cond.result <- list( data = edata, 
+        offset = norm.stdvec.result$offset, 
         convergence = norm.stdvec.result$convergence )
+    
+    if( search.h0.probe )
+    {
+        norm.between.cond.result$h0.probe <- h0.probe
+        norm.between.cond.result$h0.probe.convergence <- h0.probe.convergence
+    }
+    
+    norm.between.cond.result
 }
 
 
-normalize.standard.vector <- function( edata, edata.fstat, within.cond.var, 
-    within.cond.n, condition, verbose, vector.graph, p.value.graph )
+normalize.standard.vector <- function( edata, condition, convergence.threshold, 
+    search.h0.probe, edata.fstat, within.cond.var, within.cond.n, vector.graph, 
+    p.value.graph, verbose )
 {
-    iter.max <- 100
-    stdvec.offset.accum.step.max <- 10
-    stdvec.offset.accum.threshold <- 0.1
-    stdvec.offset.single.threshold <- 0.01
-    vector.graph.probe.num <- 5000
+    if ( ! search.h0.probe )
+    {
+        iter.max <- 100
+        single.threshold <- convergence.threshold[ 1 ]
+        accum.threshold <- convergence.threshold[ 2 ]
+        offset.accum.step.threshold <- 10
+    }
+    else
+    {
+        iter.max <- 200
+        single.threshold <- convergence.threshold[ 3 ]
+        accum.threshold <- convergence.threshold[ 4 ]
+        offset.accum.step.threshold <- 10
+        common.h0.probe.accum.step.max <- 10
+    }
     
-    last.norm.data <- edata
-    last.norm.data.fstat <- edata.fstat
+    vector.graph.probe.num <- 10000
     
-    last.stdvec.offset <- vector( "numeric" )
-    last.stdvec.h0.probe <- vector( "character" )
+    if ( verbose )
+        cat( paste0( condition, "\n" ) )
+    
+    stdvec.offset <- rep( 0, ncol( edata ) )
     
     norm.stdvec.offset <- matrix( nrow=0, ncol = ncol( edata ) )
     norm.stdvec.offset.sd <- vector( "numeric" )
@@ -207,13 +284,19 @@ normalize.standard.vector <- function( edata, edata.fstat, within.cond.var,
     norm.stdvec.offset.delta.sd <- vector( "numeric" )
     norm.stdvec.offset.accum.step <- vector( "numeric" )
     norm.stdvec.numerical.demand <- vector( "numeric" )
-    norm.stdvec.watson.u2 <- matrix( nrow=0, 
-        ncol = ( ncol( edata ) - 1 ) %/% 3 + 1 )
-    norm.stdvec.h0.probe.num <- vector( "numeric" )
     
-    stdvec.offset <- rep( 0, ncol( edata ) )
+    if ( ncol( edata ) >= 3 )
+        norm.stdvec.watson.u2 <- matrix( nrow=0, 
+            ncol = ( ncol( edata ) - 1 ) %/% 3 + 1 )
+    else
+        norm.stdvec.watson.u2 <- NULL
     
-    vector.graph.probe <- NULL
+    if ( search.h0.probe )
+    {
+        norm.stdvec.common.h0.probe.accum.step <- vector( "numeric" )
+        norm.stdvec.h0.probe.num <- vector( "numeric" )
+        norm.stdvec.common.h0.probe.num <- vector( "numeric" )
+    }
     
     if ( ! is.null( vector.graph ) )
     {
@@ -226,34 +309,46 @@ normalize.standard.vector <- function( edata, edata.fstat, within.cond.var,
         else
             vector.graph.probe <- sample( edata.probe, vector.graph.probe.num )
     }
+    else
+        vector.graph.probe <- NULL
     
-    if ( verbose )
-        cat( paste0( condition, "\n" ) )
+    last.norm.data <- edata
+    stdvec.offset.accum.step <- 0
+    
+    if ( search.h0.probe )
+    {
+        last.norm.data.fstat <- edata.fstat
+        stdvec.common.h0.probe.accum.step <- 0
+    }
     
     iter <- 0
-    stdvec.offset.accum.step <- 0
-    stdvec.offset.ratio <- 1
+    overall.convergence <- FALSE
     
-    while ( iter < iter.max && 
-        stdvec.offset.accum.step < stdvec.offset.accum.step.max &&
-        stdvec.offset.ratio >= stdvec.offset.single.threshold )
+    while ( iter < iter.max && ! overall.convergence )
     {
         iter <- iter + 1
         
-        # obtain next step of standard vector offset     
-        stdvec.offset.step <- calculate.stdvec.offset( last.norm.data, 
-            last.norm.data.fstat, within.cond.var, within.cond.n, vector.graph, 
-            vector.graph.probe, p.value.graph, condition, iter )
+        # obtain next step of standard vector offset
+        if ( ! search.h0.probe )
+            stdvec.offset.step <- calculate.stdvec.offset( last.norm.data, 
+                condition, FALSE, NULL, NULL, NULL, vector.graph, 
+                vector.graph.probe, NULL, iter )
+        else
+            stdvec.offset.step <- calculate.stdvec.offset( last.norm.data, 
+                condition, TRUE, last.norm.data.fstat, within.cond.var, 
+                within.cond.n, vector.graph, vector.graph.probe, p.value.graph, 
+                iter )
         
         stdvec.offset.delta <- stdvec.offset.step$value
         stdvec.offset.stderr <- stdvec.offset.step$stderr
         stdvec.numerical.demand <- stdvec.offset.step$numerical.demand
         stdvec.watson.u2 <- stdvec.offset.step$watson.u2
-        stdvec.h0.probe <- stdvec.offset.step$h0.probe
         
-        stdvec.h0.probe.num <- NULL
-        if ( ! is.null( stdvec.h0.probe ) )
+        if ( search.h0.probe )
+        {
+            stdvec.h0.probe <- stdvec.offset.step$h0.probe
             stdvec.h0.probe.num <- length( stdvec.h0.probe )
+        }
         
         # check errors
         if ( any( is.nan( stdvec.offset.delta ) ) || 
@@ -261,7 +356,7 @@ normalize.standard.vector <- function( edata, edata.fstat, within.cond.var,
             stop( "NaN error in normalize.stdvec.condec" )
         
         if ( stdvec.numerical.demand < .Machine$double.eps * 10^3 )
-            stop( "numerical error in normalize.stdvec.condec" )
+            stop( "Numerical error in normalize.stdvec.condec" )
         
         # update total standard vector offset
         stdvec.offset <- stdvec.offset + stdvec.offset.delta
@@ -269,28 +364,60 @@ normalize.standard.vector <- function( edata, edata.fstat, within.cond.var,
         
         # update data at once with total offset
         last.norm.data <- sweep( edata, 2, stdvec.offset )
-        if ( ! is.null( edata.fstat ) )
+        if ( search.h0.probe )
             last.norm.data.fstat <- sweep( edata.fstat, 2, stdvec.offset )
         
         # check convergence
         stdvec.offset.sd <- sd( stdvec.offset )
         stdvec.offset.delta.sd <- sd( stdvec.offset.delta )
         
-        stdvec.offset.stderr.ratio <- 
-            stdvec.offset.stderr / stdvec.offset.sd
-        stdvec.offset.delta.sd.ratio <- 
-            stdvec.offset.delta.sd / stdvec.offset.sd
+        stdvec.offset.stderr.ratio <- ifelse( stdvec.offset.sd > 0, 
+            stdvec.offset.stderr / stdvec.offset.sd, 1 )
+        stdvec.offset.delta.sd.ratio <- ifelse( stdvec.offset.sd > 0, 
+            stdvec.offset.delta.sd / stdvec.offset.sd, 1 )
         
-        stdvec.offset.ratio <- stdvec.offset.delta.sd / stdvec.offset.stderr
-        
-        if ( stdvec.offset.ratio < stdvec.offset.accum.threshold )
-            stdvec.offset.accum.step <- stdvec.offset.accum.step + 1
+        if ( stdvec.offset.delta.sd == 0 )
+            stdvec.offset.ratio <- 0
+        else if ( stdvec.offset.stderr == 0 )
+            stdvec.offset.ratio <- 1
         else
-            stdvec.offset.accum.step <- 0
+            stdvec.offset.ratio <- stdvec.offset.delta.sd / stdvec.offset.stderr
+        
+        stdvec.offset.accum.step <- ifelse( 
+            stdvec.offset.ratio < accum.threshold, 
+            stdvec.offset.accum.step + 1, 0 )
+        
+        stdvec.convergence <- stdvec.offset.ratio < single.threshold || 
+            stdvec.offset.accum.step > offset.accum.step.threshold
+        
+        if ( ! search.h0.probe )
+            overall.convergence <- stdvec.convergence
+        else
+        {
+            stdvec.common.h0.probe.accum.step <- ifelse( stdvec.convergence, 
+                stdvec.common.h0.probe.accum.step + 1, 0 )
+            
+            overall.convergence <- stdvec.common.h0.probe.accum.step >= 
+                common.h0.probe.accum.step.max
+        }
         
         # store last results
         last.stdvec.offset <- stdvec.offset
-        last.stdvec.h0.probe <- stdvec.h0.probe
+        
+        if ( search.h0.probe )
+        {
+            if ( stdvec.common.h0.probe.accum.step == 0 )
+                stdvec.common.h0.probe <- NULL
+            else if ( stdvec.common.h0.probe.accum.step == 1 )
+                stdvec.common.h0.probe <- stdvec.h0.probe
+            else
+                stdvec.common.h0.probe <- intersect( stdvec.h0.probe, 
+                    stdvec.common.h0.probe )
+            
+            stdvec.common.h0.probe.num <- ifelse( 
+                is.null( stdvec.common.h0.probe ), NA, 
+                length( stdvec.common.h0.probe ) )
+        }
         
         # store step results
         norm.stdvec.offset <- rbind( norm.stdvec.offset, stdvec.offset )
@@ -303,12 +430,19 @@ normalize.standard.vector <- function( edata, edata.fstat, within.cond.var,
             stdvec.offset.accum.step )
         norm.stdvec.numerical.demand <- c( norm.stdvec.numerical.demand, 
             stdvec.numerical.demand )
-        if ( ! is.null( stdvec.watson.u2 ) )
-            norm.stdvec.watson.u2 <- rbind( norm.stdvec.watson.u2, 
-                stdvec.watson.u2 )
-        if ( ! is.null( stdvec.h0.probe.num ) )
+        norm.stdvec.watson.u2 <- rbind( norm.stdvec.watson.u2, 
+            stdvec.watson.u2 )
+        
+        if ( search.h0.probe )
+        {
+            norm.stdvec.common.h0.probe.accum.step <- 
+                c( norm.stdvec.common.h0.probe.accum.step, 
+                    stdvec.common.h0.probe.accum.step )
             norm.stdvec.h0.probe.num <- c( norm.stdvec.h0.probe.num, 
                 stdvec.h0.probe.num )
+            norm.stdvec.common.h0.probe.num <- 
+                c( norm.stdvec.common.h0.probe.num, stdvec.common.h0.probe.num )
+        }
         
         if ( verbose )
         {
@@ -321,20 +455,31 @@ normalize.standard.vector <- function( edata, edata.fstat, within.cond.var,
             cat( sprintf( "  %2d %g %g %g %02d %g [%s]", iter, 
                 stdvec.offset.sd, stdvec.offset.stderr.ratio, 
                 stdvec.offset.delta.sd.ratio, stdvec.offset.accum.step, 
-                stdvec.numerical.demand, stdvec.watson.u2.char ), 
-                stdvec.h0.probe.num, "\n" )
+                stdvec.numerical.demand, stdvec.watson.u2.char ) )
+            
+            if ( search.h0.probe )
+            {
+                cat( sprintf( " %02d %d", stdvec.common.h0.probe.accum.step, 
+                    stdvec.h0.probe.num ) )
+                
+                if ( ! is.na( stdvec.common.h0.probe.num ) )
+                    cat( paste0( " ", stdvec.common.h0.probe.num ) )
+            }
+            
+            cat( "\n" )
         }
     }
     
     if ( verbose )
         cat( "\n" )
     
-    if ( stdvec.offset.accum.step < stdvec.offset.accum.step.max && 
-        stdvec.offset.ratio >= stdvec.offset.single.threshold )
-        stop( "no convergence in normalize.stdvec.condec" )
+    if ( ! overall.convergence )
+        stop( "No convergence in normalize.stdvec.condec" )
     
+    # remove sample or condition names from step results
     dimnames( norm.stdvec.offset ) <- NULL
-    dimnames( norm.stdvec.watson.u2 ) <- NULL
+    if ( ! is.null( norm.stdvec.watson.u2 ) )
+        dimnames( norm.stdvec.watson.u2 ) <- NULL
     
     norm.stdvec.convergence <- list( offset = norm.stdvec.offset, 
         offset.sd = norm.stdvec.offset.sd, 
@@ -344,29 +489,31 @@ normalize.standard.vector <- function( edata, edata.fstat, within.cond.var,
         numerical.demand = norm.stdvec.numerical.demand, 
         watson.u2 = norm.stdvec.watson.u2 )
     
-    if ( length( norm.stdvec.h0.probe.num ) > 0 )
-        norm.stdvec.convergence$h0.probe.num <- norm.stdvec.h0.probe.num
+    norm.stdvec.result <- list( offset = last.stdvec.offset, 
+        convergence = norm.stdvec.convergence )
     
-    if ( is.null( last.stdvec.h0.probe ) ) {
-        list( offset = last.stdvec.offset, 
-            convergence = norm.stdvec.convergence )
-    } else {
-        list( offset = last.stdvec.offset, h0.probe = last.stdvec.h0.probe, 
-            convergence = norm.stdvec.convergence )
+    if ( search.h0.probe )
+    {
+        norm.stdvec.result$h0.probe <- stdvec.common.h0.probe
+        norm.stdvec.result$convergence$common.h0.probe.accum.step <- 
+            norm.stdvec.common.h0.probe.accum.step
+        norm.stdvec.result$convergence$h0.probe.num <- norm.stdvec.h0.probe.num
+        norm.stdvec.result$convergence$common.h0.probe.num <- 
+            norm.stdvec.common.h0.probe.num
     }
+    
+    norm.stdvec.result
 }
 
 
-calculate.stdvec.offset <- function( edata, edata.fstat, within.cond.var, 
-    within.cond.n, vector.graph, vector.graph.probe, p.value.graph, condition, 
-    iter )
+calculate.stdvec.offset <- function( edata, condition, search.h0.probe, 
+    edata.fstat, within.cond.var, within.cond.n, vector.graph, 
+    vector.graph.probe, p.value.graph, iter )
 {
     stdvec.trim <- 0.01
     ks.test.alpha <- 1e-3
     
-    h0.probe <- NULL
-    
-    if ( is.null( edata.fstat ) )
+    if ( ! search.h0.probe )
     {
         # identify probes for normalization
         expr.var <- apply( edata, 1, var )
@@ -396,7 +543,7 @@ calculate.stdvec.offset <- function( edata, edata.fstat, within.cond.var,
         expr.p.value <- pf( expr.f, df1 = expr.k-1, df2 = expr.n-expr.k, 
             lower.tail = FALSE )
         
-        # identify H0 probes with one-sided up Kolmogorov-Smirnov test
+        # identify h0 probes with one-sided up Kolmogorov-Smirnov test
         ks.test.d <- sqrt( - log( ks.test.alpha ) / 2 )
         
         epv <- sort( expr.p.value )
@@ -440,13 +587,13 @@ calculate.stdvec.offset <- function( edata, edata.fstat, within.cond.var,
                 png.filename <- sprintf( "%s/pvalue_iter%02d.png", 
                     p.value.graph, iter )
                 
-                png( png.filename, width=640, height=360 )
+                png( png.filename, width=1280, height=720 )
             }
             
             par.default <- par( no.readonly=TRUE )
             
-            par( mfrow = c(1,2), pty="s", xpd=FALSE, 
-                mar = c( 3.2, 2.2, 1.6, 2.2 ), oma = c( 0, 3.8, 0, 0 ) )
+            par( mfrow = c(1,2), pty="s", mar = c( 3.4, 4.0, 0, 1.6 ), 
+                oma = c( 0, 4.2, 3.4, 0 ), mgp = c( 4.0, 1.2, 0 ) )
             
             epv.quant <- 1:epv.n / epv.n
             epv.h0.idx <- epv.h0.i : epv.n
@@ -461,31 +608,28 @@ calculate.stdvec.offset <- function( edata, edata.fstat, within.cond.var,
             {
                 plot( 0, type="n", 
                     xlim = c( xylim[[i]][1], 1 ), ylim = c( xylim[[i]][2], 1 ), 
-                    xlab="p-value", ylab="", cex.axis=1.3, cex.lab=1.5 )
+                    xlab="p-value", ylab="", cex.axis=2.5, cex.lab=2.5 )
                 
                 segments( x0 = c( 0, epv[ - epv.h0.idx ] ), 
                     y0 = c( 0, epv.quant[ - epv.h0.idx ] ), 
                     x1 = c( epv[ - epv.h0.idx ], epv[ epv.h0.idx ][ 1 ] ), 
-                    lwd=2 )
+                    lwd=2.5, col="black" )
                 segments( x0 = epv[ epv.h0.idx ], y0 = epv.quant[ epv.h0.idx ], 
-                    x1 = c( epv[ epv.h0.idx ][ -1 ], 1 ), lwd=2, col="red" )
-                points( epv.h0.p, epv.h0.q, pch=20, cex=2.5 )
+                    x1 = c( epv[ epv.h0.idx ][ -1 ], 1 ), lwd=2.5, col="red" )
+                points( epv.h0.p, epv.h0.q, pch=20, cex=3 )
                 
-                segments( 0, 1 - pi0.est, 1, 1, col="blue", lwd=1.5, lty=2 )
-                segments( 0, 1 - pi0.est + epv.yd, 1, 1 + epv.yd, col="blue", 
-                    lwd=1.5, lty=3 )
-                
-                if ( i==1 )
-                    graph.title <- sprintf( "iter=%02d", iter )
-                else
-                    graph.title <- substitute( paste( "#", H[0], "=", h0.n ), 
-                        list( h0.n = sprintf( "%5d", epv.h0.n ) ) )
-                
-                title( main=graph.title, line = ifelse( i==1, 1.4, 1.75 ), 
-                    font.main=1, cex.main=1.7 )
+                segments( 0, 1 - pi0.est, 1, 1, lwd=2, lty=2, col="blue" )
+                segments( 0, 1 - pi0.est + epv.yd, 1, 1 + epv.yd, lwd=2, lty=3, 
+                    col="blue" )
             }
             
-            mtext( "F( p-value )", side=2, line=1.3, outer=TRUE, cex=1.5 )
+            mtext( "F( p-value )", side=2, line=1.0, outer=TRUE, cex=2.5 )
+            
+            graph.title <- substitute( 
+                paste( "iter=", iter, "    -    #", H[0], "=", h0.n ), 
+                list( iter = sprintf( "%02d", iter ), 
+                    h0.n = sprintf( "%5d", epv.h0.n ) ) )
+            mtext( graph.title, 3, line=-1.2, outer=TRUE, cex=2.7 )
             
             if ( p.value.graph != "" )
                 dev.off()
@@ -524,9 +668,7 @@ calculate.stdvec.offset <- function( edata, edata.fstat, within.cond.var,
     dimension.num <- ncol( expr.scaled )
     
     if ( dimension.num < 3 )
-    {
-        theta.watson.u2 = NULL
-    }
+        theta.watson.u2 <- NULL
     else
     {
         # identify condition groups
@@ -616,20 +758,20 @@ calculate.stdvec.offset <- function( edata, edata.fstat, within.cond.var,
                             sprintf( "_dg%02d", dim.group.idx ), "" ), 
                         iter )
                     
-                    png( png.filename, width=640, height=360 )
+                    png( png.filename, width=1280, height=720 )
                 }
                 
                 par.default <- par( no.readonly=TRUE )
                 
-                par( mfrow = c(1,2), pty="s", xpd=FALSE, 
-                    mar = c( 1.2, 1.2, 2.2, 1.2 ), oma = c( 0, 0, 0, 0 ) )
+                par( mfrow = c(1,2), pty="s", xpd=FALSE, cex.lab=2, 
+                    mar = c( 1, 0.5, 2.2, 0.5 ), oma = c( 0, 0, 0, 0 ) )
                 
                 # select offset values for condition group
                 stdvec.offset.uv <- stdvec.offset[ 
                     dimension.group[[ dim.group.idx ]] ] %*% uv
                 stdvec.offset.u <- stdvec.offset.uv[ , 1 ]
                 stdvec.offset.v <- stdvec.offset.uv[ , 2 ]
-
+                
                 # plot a sample of standardized sample vectors
                 uv.lim <- c( -1.5, 1.5 )
                 plot( 0, type="n", xlim=uv.lim, ylim=uv.lim, axes=FALSE, 
@@ -642,40 +784,39 @@ calculate.stdvec.offset <- function( edata, edata.fstat, within.cond.var,
                 }
                 expr.uv.probe.num <- length( expr.uv.probe )
                 
-                expr.uv.factor <- 1.05
+                expr.uv.factor <- 1.06
                 expr.uv.color <- gray( 0.3 )
                 expr.uv.width <- ifelse( expr.uv.probe.num > 1000, 0.1, 0.2 )
                 segments( 0, 0, expr.uv.factor * expr.u[ expr.uv.probe ], 
                     expr.uv.factor * expr.v[ expr.uv.probe ], 
-                    col=expr.uv.color, lwd=expr.uv.width )
+                    lwd=expr.uv.width, col=expr.uv.color )
                 
                 grid.pos.x <- c( 0, -sqrt(3/4), sqrt(3/4) )
                 grid.pos.y <- c( 1, -1/2, -1/2 )
                 
                 grid.length <- expr.uv.factor * sqrt( 2 )
                 segments( 0, 0, grid.length * grid.pos.x, 
-                    grid.length * grid.pos.y, lwd=2 )
+                    grid.length * grid.pos.y, lwd=2.5, col="black" )
                 
                 stdvec.offset.uv.factor <- 10
                 stdvec.offset.uv.color <- "red"
                 segments( 0, 0, stdvec.offset.uv.factor * stdvec.offset.u, 
-                    stdvec.offset.uv.factor * stdvec.offset.v, lwd=2, 
-                    col=stdvec.offset.uv.color )
+                    stdvec.offset.uv.factor * stdvec.offset.v, lwd=3, 
+                    col="red" )
                 
                 par( xpd=TRUE )
                 
                 grid.label.length <- 1.63
                 grid.labels <- c( "s1", "s2", "s3" )
                 text( grid.label.length * grid.pos.x, 
-                    grid.label.length * grid.pos.y, grid.labels, cex=1.5 )
+                    grid.label.length * grid.pos.y, grid.labels, cex=2.5 )
                 
                 par( xpd=FALSE )
                 
                 stdvec.offset.mag <- sqrt( sum( stdvec.offset[ 
                     dimension.group[[ dim.group.idx ]] ]^2 ) )
                 mtext( paste0( "||offset|| = ", sprintf( "%.3e", 
-                    stdvec.offset.mag ) ), side=1, line=0.2, 
-                    cex=1.5 )
+                    stdvec.offset.mag ) ), side=1, line=0.7, cex=2.5 )
                 
                 # plot polar distributions of standard vector angles
                 polar.expr.theta <- expr.theta.density$x[ 
@@ -688,35 +829,35 @@ calculate.stdvec.offset <- function( edata, edata.fstat, within.cond.var,
                 polar.invar.rho <- 2 * invar.theta.density$y[ 
                     invar.theta.density.sel ]
                 
+                theta.labels <- c( "", "", "" )
                 rho.grid <- seq( 0, 3/(2*pi), length.out=4 )
                 rho.labels <- c( "", "", expression(1/pi), "" )
-                theta.labels <- c( "", "", "" )
                 
                 radial.plot( polar.expr.rho, polar.expr.theta - pi/2, 
-                    start=pi/2, rp.type="p", radial.lim = rho.grid, 
-                    radial.labels = rho.labels, 
+                    rp.type="p", start=pi/2, radial.lim=rho.grid, 
                     show.grid.labels = length( theta.labels ), 
-                    labels = theta.labels, mar = par( "mar" ) )
+                    labels=theta.labels, radial.labels=rho.labels, lwd=2.5, 
+                    mar = par( "mar" ) )
                 
                 radial.plot( polar.invar.rho, polar.invar.theta - pi/2, 
-                    start=pi/2, rp.type="p", radial.lim = rho.grid, lty=2, 
+                    rp.type="p", start=pi/2, radial.lim=rho.grid, lwd=2, lty=2, 
                     line.col="blue", add=TRUE )
                 
-                grid.label.length <- 0.523
+                grid.label.length <- 0.52
                 text( grid.label.length * grid.pos.x, 
-                    grid.label.length * grid.pos.y, grid.labels, cex=1.5 )
+                    grid.label.length * grid.pos.y, grid.labels, cex=2.5 )
                 
                 mtext( substitute( paste( "Watson U"^"2", " = ", wu2 ), 
                     list( wu2 = sprintf( "%.3e", 
                         theta.watson.u2[ dim.group.idx ] ) ) ), 
-                    side=1, line=0.2, cex=1.5 )
+                    side=1, line=0.8, cex=2.5 )
                 
                 graph.title <- sprintf( "%s%s    -    iter=%02d", condition, 
                     ifelse( dimension.group.num > 1, 
                         sprintf( ":%02d", dim.group.idx ), "" ), 
                     iter )
-                title( main=graph.title, outer=TRUE, line=-1.8, font.main=1, 
-                    cex.main=1.7 )
+                title( main=graph.title, outer=TRUE, line=-3, font.main=1, 
+                    cex.main=2.7 )
                 
                 if ( vector.graph != "" )
                     dev.off()
@@ -726,27 +867,14 @@ calculate.stdvec.offset <- function( edata, edata.fstat, within.cond.var,
         }
     }
     
-    list( value = stdvec.offset, stderr = stdvec.offset.stderr, 
+    stdvec.result <- list( value = stdvec.offset, 
+        stderr = stdvec.offset.stderr, 
         numerical.demand = stdvec.numerical.demand, 
-        watson.u2 = theta.watson.u2, 
-        h0.probe = h0.probe )
-}
-
-
-watson.u2 <- function( x, y )
-{
-    # see section 6.5 of Durbin, Distribution Theory for Tests Based on the 
-    # Sample Distribution Function, SIAM, Philadelphia (1973)
+        watson.u2 = theta.watson.u2 )
     
-    n <- length( x )
-    m <- length( y )
+    if ( search.h0.probe )
+        stdvec.result$h0.probe = h0.probe
     
-    r <- c( sort( x ), sort( y ) )
-    r.rank <- rank( r, ties.method="average" )
-    
-    z <- ( r.rank[ 1:n ] - 1:n ) / m - ( 1:n - 1/2 ) / n 
-    
-    ( m / (n+m) ) * sum( ( z - mean( z ) )^2 ) + 
-        ( m*(m+2*n) ) / ( 12*n*m*(n+m) ) 
+    stdvec.result
 }
 

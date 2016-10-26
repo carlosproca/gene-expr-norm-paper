@@ -1,0 +1,7 @@
+"FileName"	"Sample"	"Condition"
+"chipS-rep1.CEL"	"spike.1"	"spike"
+"chipS-rep2.CEL"	"spike.2"	"spike"
+"chipS-rep3.CEL"	"spike.3"	"spike"
+"chipC-rep1.CEL"	"constant.1"	"constant"
+"chipC-rep2.CEL"	"constant.2"	"constant"
+"chipC-rep3.CEL"	"constant.3"	"constant"

@@ -1,5 +1,5 @@
-# Copyright (c) 2015, Universitat Rovira i Virgili (Spain), University of 
-# Aveiro (Portugal) & Aarhus University (Denmark)
+# Copyright (c) 2016, Universitat Rovira i Virgili (Spain), Aarhus University 
+# (Denmark) and University of Aveiro (Portugal)
 # 
 # Written by Carlos P. Roca
 # as Research funded by the European Union
@@ -33,11 +33,11 @@ library( limma )
 library( RColorBrewer )
 
 
-source( "normalize_stdvec_condec.r" )
-source( "normalize_stdvec_condec_probe.r" )
-
 source( "normalize_median_condec.r" )
 source( "normalize_median_condec_probe.r" )
+source( "normalize_stdvec_condec.r" )
+source( "normalize_stdvec_condec_probe.r" )
+source( "watson_u2.r" )
 
 
 # set directories
@@ -243,9 +243,10 @@ rm( ma.data, ma.flag.ok, raw.expr.data )
 
 # normalize real expression data and obtain offset
 
-stdvec.condec.norm.real.result <- normalize.stdvec.condec( real.expr.data, 
+stdvec.condec.norm.real.result <- normalize.stdvec.condec( real.expr.data,
     ma.sample.condition, verbose=TRUE )
 
+stdvec.condec.norm.real.data <- stdvec.condec.norm.real.result$data
 stdvec.condec.norm.real.offset <- stdvec.condec.norm.real.result$offset
 
 rm( stdvec.condec.norm.real.result )
@@ -256,8 +257,10 @@ rm( stdvec.condec.norm.real.result )
 random.seed <- 20140101
 set.seed( random.seed )
 
-expr.data.sample.mean <- rowMeans( real.expr.data )
-expr.data.sample.sd <- apply( real.expr.data, 1, sd )
+# generate data sets without differential gene expression
+
+expr.data.sample.mean <- rowMeans( stdvec.condec.norm.real.data )
+expr.data.sample.sd <- apply( stdvec.condec.norm.real.data, 1, sd )
 
 normal.expr.data <- 
     t( mapply( function( m, s ) rnorm( ma.sample.num, m, s ), 
@@ -271,18 +274,145 @@ lognormal.expr.data <-
 colnames( normal.expr.data ) <- ma.sample
 colnames( lognormal.expr.data ) <- ma.sample
 
+# generate data sets with differential gene expression
+
+normal.de.probe.fraction <- 0.90
+normal.de.probe.all.num <- round( normal.de.probe.fraction * ma.probe.num )
+
+normal.de.probe.all <- sample( ma.probe, normal.de.probe.all.num )
+normal.nonde.probe.all <- ma.probe[ ! ma.probe %in% normal.de.probe.all ]
+
+normal.de.treatment <- sample( ma.treatment, ma.treatment.num )
+normal.de.probe.num <- round( exp( runif( length( normal.de.treatment ), 
+    log( normal.de.probe.all.num / 100 ), log( normal.de.probe.all.num ) ) ) )
+names( normal.de.probe.num ) <- normal.de.treatment
+normal.de.probe.num <- normal.de.probe.num[ ma.treatment ]
+
+normal.de.probe <- lapply( normal.de.probe.num, function( ndpn ) 
+    sample( normal.de.probe.all, ndpn ) )
+
+normal.de.over.expr.prob <- sapply( ma.treatment, function( mt ) {
+    ru <- runif( 1 )
+    
+    if ( ru <= 1/3 )
+        x = abs( rnorm( 1, 0, 0.10 ) )
+    else if ( ru <= 2/3 )
+        x = rnorm( 1, 0.5, 0.10 )
+    else
+        x = 1 - abs( rnorm( 1, 0, 0.10 ) )
+    
+    if ( x < 0 )
+        x <- 0
+    else if ( x > 1 )
+        x <- 1
+    
+    x
+} )
+
+normal.de.diff.expr.sign <- lapply( ma.treatment, function( mt ) 
+    2 * ( runif( normal.de.probe.num[ mt ] ) <= 
+        normal.de.over.expr.prob[ mt ] ) - 1 )
+names( normal.de.diff.expr.sign ) <- ma.treatment
+
+normal.de.diff.expr.balance <- sapply( normal.de.diff.expr.sign, mean )
+
+normal.de.relative.change <- 2
+
+normal.de.expr.data <- 
+    t( mapply( function( m, s ) rnorm( ma.sample.num, m, s ), 
+        expr.data.sample.mean, expr.data.sample.sd ) )
+colnames( normal.de.expr.data ) <- ma.sample
+
+for ( mt in ma.treatment )
+{
+    mt.probe <- normal.de.probe[[ mt ]]
+    mt.sample.idx <- which( ma.sample.condition == mt )
+    
+    normal.de.expr.data[ mt.probe, mt.sample.idx ] <- 
+        normal.de.expr.data[ mt.probe, mt.sample.idx ] + 
+            normal.de.diff.expr.sign[[ mt ]] * 
+            normal.de.relative.change * 
+            expr.data.sample.sd[ mt.probe ]
+}
+
+# add detected normalization offset to random datasets
+
 normal.expr.data <- sweep( normal.expr.data, 2, 
     stdvec.condec.norm.real.offset, "+" )
 lognormal.expr.data <- sweep( lognormal.expr.data, 2, 
     stdvec.condec.norm.real.offset, "+" )
+normal.de.expr.data <- sweep( normal.de.expr.data, 2, 
+    stdvec.condec.norm.real.offset, "+" )
 
-save( normal.expr.data, lognormal.expr.data, 
+save( normal.expr.data, lognormal.expr.data, normal.de.expr.data, 
     file = file.path( data.dir, "random_expr.data.rda" ) )
 
 
 # normalize real and random datasets with four methods
 
-data.tag <- c( "real", "normal" )
+data.tag <- c( "real", "normal", "normal.de" )
+
+norm.method <- c( "no", "median", "quantile", "median.condec", "stdvec.condec" )
+
+norm.data.var <- sapply( norm.method, function( nmeth ) 
+    paste0( nmeth, ".norm.", 
+        ifelse( grepl( "\\.condec$", nmeth ), "result", "data" ) ) )
+
+norm.method.pch <- c( 8, 1, 2, 19, 17 )
+norm.method.col <- c( "orange3", "black", "red3", "green3", "blue3" )
+
+names( norm.method.pch ) <- norm.method
+names( norm.method.col ) <- norm.method
+
+for ( dtag in data.tag )
+{
+    expr.data <- get( paste0( dtag, ".expr.data" ) )
+    
+    p.value.graph.dir <- file.path( p.value.dir, dtag )
+    
+    for ( nmeth in norm.method )
+    {
+        if ( nmeth == "no" )
+        {
+            no.norm.data <- expr.data
+        }
+        else if ( nmeth == "median" )
+        {
+            median.offset <- apply( expr.data, 2, median )
+            median.offset <- median.offset - mean( median.offset )
+            median.norm.data <- sweep( expr.data, 2, median.offset )
+        }
+        else if ( nmeth == "quantile" )
+        {
+            quantile.norm.data <- normalizeBetweenArrays( expr.data, 
+                method="quantile" )
+        }
+        else if ( nmeth == "median.condec" )
+        {
+            median.condec.norm.result <- normalize.median.condec( expr.data, 
+                ma.sample.condition, verbose=TRUE )
+            median.condec.norm.data <- median.condec.norm.result$data
+        }
+        else if ( nmeth == "stdvec.condec" )
+        {
+            stdvec.condec.norm.result <- normalize.stdvec.condec( expr.data, 
+                ma.sample.condition, p.value.graph=p.value.graph.dir, 
+                verbose=TRUE )
+            stdvec.condec.norm.data <- stdvec.condec.norm.result$data
+        }
+        else
+            stop( "wrong normalization method ", nmeth )
+    }
+    
+    # save normalization results
+    norm.file.name <- paste0( dtag, "_norm.data.rda" )
+    save( list=norm.data.var, file = file.path( data.dir, norm.file.name ) )
+}
+
+
+# plot expression levels after each normalization method
+
+data.tag <- c( "real", "normal", "normal.de" )
 
 norm.method <- c( "no", "median", "quantile", "median.condec", "stdvec.condec" )
 
@@ -291,42 +421,12 @@ if ( ! file.exists( boxplot.dir ) )
 
 for ( dtag in data.tag )
 {
-    expr.data <- get( paste0( dtag, ".expr.data" ) )
-    
-    p.value.graph.dir <- file.path( p.value.dir, dtag )
-    
-    # no normalization
-    no.norm.data <- expr.data
-    
-    # median normalization
-    median.offset <- apply( expr.data, 2, median )
-    median.offset <- median.offset - mean( median.offset )
-    median.norm.data <- sweep( expr.data, 2, median.offset )
-    
-    # quantile normalization
-    quantile.norm.data <- normalizeBetweenArrays( expr.data, method="quantile" )
-    
-    # median condition-decomposition normalization
-    median.condec.norm.result <- normalize.median.condec( expr.data, 
-        ma.sample.condition, 0.5, verbose=TRUE )
-    median.condec.norm.data <- median.condec.norm.result$data
-    
-    # standard-vector condition-decomposition normalization
-    stdvec.condec.norm.result <- normalize.stdvec.condec( expr.data, 
-        ma.sample.condition, verbose=TRUE, p.value.graph=p.value.graph.dir )
-    stdvec.condec.norm.data <- stdvec.condec.norm.result$data
-    
-    # save normalization results    
-    norm.data.var <- c( "no.norm.data", "median.norm.data", 
-        "quantile.norm.data", "median.condec.norm.result", 
-        "stdvec.condec.norm.result" )
     norm.file.name <- paste0( dtag, "_norm.data.rda" )
-    save( list=norm.data.var, file = file.path( data.dir, norm.file.name ) )
+    loaded <- load( file.path( data.dir, norm.file.name ) )
+    stopifnot( norm.data.var %in% loaded )
     
-    # plot expression levels
-    y.at <- 4:10
-    y.label <- as.character( y.at )
-    y.label[ 2 * 1:3 ] <- ""
+    median.condec.norm.data <- median.condec.norm.result$data
+    stdvec.condec.norm.data <- stdvec.condec.norm.result$data
     
     for ( nmeth in norm.method )
     {
@@ -334,23 +434,27 @@ for ( dtag in data.tag )
         
         bp.file.name <- paste0( dtag, "_", nmeth, ".norm.pdf" )
         cairo_pdf( filename = file.path( boxplot.dir, bp.file.name ), 
-            width=3.5, height=1.5 )
+            width=2.35, height=1.5 )
         
-        par( mar = c( 0.1, 0.7, 0.1, 0.1 ), mgp = c( 0.75, 0, 0 ), tcl=-0.15 )
+        par( mar = c( 0.1, 0.85, 0.1, 0.1 ), mgp = c( 1, 0, 0 ), tcl=-0.10 )
         
         boxplot( norm.data, xaxt="n", yaxt="n", 
             xlim = c( 4, ma.sample.num-3 ), ylim = c( 3.6, 10.4 ), 
             col=ma.sample.color, outline=FALSE, pars = list( boxwex=1, 
             medlwd=1.5, boxlty=0, whisklty=0 ) )
         
-        axis( 2, at=y.at, labels=y.label , cex.axis=0.55 )
+        y.at <- 4:10
+        y.label <- as.character( y.at )
+        y.label[ 2 * 1:3 ] <- ""
+        
+        axis( 2, at=y.at, labels=y.label , cex.axis=0.63 )
         
         dev.off()
-    }  
+    }
 }
 
 
-# obtain graphs with convergence of standard vectors
+# plot graphs with convergence of standard vectors
 
 random.seed <- 20150101
 set.seed( random.seed )
@@ -374,13 +478,13 @@ for ( dtag in data.tag )
     
     # plot convergence for one condition
     normalize.stdvec.condec( expr.data, stdvec.convergence.condition, 
-        verbose=TRUE, vector.graph=vector.graph.dir )
+        vector.graph=vector.graph.dir, verbose=TRUE )
 }
 
 
 # study between-condition variation, depending on probe selection
 
-random.seed <- 20150201
+random.seed <- 20160101
 set.seed( random.seed )
 
 h0p.frac.num <- 300
@@ -392,7 +496,7 @@ h0.probe.frac <- h0p.frac.initial *
 h0.probe.num <- floor( h0.probe.frac * ma.probe.num )
 h0.probe.num <- h0.probe.num[ ! duplicated( h0.probe.num ) ]
 
-data.tag <- c( "real", "normal" )
+data.tag <- c( "real", "normal", "normal.de" )
 
 norm.method <- c( "median.condec", "stdvec.condec" )
 
@@ -405,103 +509,100 @@ for ( dtag in data.tag )
 {
     norm.file.name <- paste0( dtag, "_norm.data.rda" )
     loaded <- load( file.path( data.dir, norm.file.name ) )
-    
-    stopifnot( c( "no.norm.data", "median.condec.norm.result", 
-        "stdvec.condec.norm.result" ) %in% loaded )
+    stopifnot( norm.data.var %in% loaded )
     
     cond.grand.mean.sd <- data.frame( h0.probe.num )
     cond.median.mean.sd <- data.frame( h0.probe.num )
     
     for ( nmeth in norm.method )
-    {        
+    {
         # obtain within-condition results
         norm.result <- get( paste0( nmeth, ".norm.result" ) )
         
-        norm.within.cond.data <- sweep( no.norm.data, 2, 
+        norm.within.cond.data <- sweep( no.norm.data, 2,
             norm.result$within.condition.offset )
         
         # select probes with no missing values in any normalization sample
         # only needed in general, not for this dataset
-        norm.probe.idx <- 
+        norm.probe.idx <-
             which( rowSums( is.na( norm.within.cond.data ) ) == 0 )
         
         # identify samples available per condition
-        norm.within.cond.n <- as.vector( 
+        norm.within.cond.n <- as.vector(
             table( ma.sample.condition )[ ma.condition ] )
         names( norm.within.cond.n ) <- ma.condition
         
         # calculate balanced within-condition means
         norm.bal.mean.n <- min( norm.within.cond.n )
         
-        norm.bal.within.cond.mean <- sapply( ma.condition, function( cond ) 
+        norm.bal.within.cond.mean <- sapply( ma.condition, function( cond )
             if ( norm.within.cond.n[ cond ] == norm.bal.mean.n )
-                rowMeans( norm.within.cond.data[ norm.probe.idx, 
+                rowMeans( norm.within.cond.data[ norm.probe.idx,
                     cond == ma.sample.condition ] )
             else  # norm.within.cond.n[ cond ] > norm.bal.mean.n
-                rowMeans( t( apply( 
-                    t( norm.within.cond.data[ norm.probe.idx, 
-                        cond == ma.sample.condition ] ), 
+                rowMeans( t( apply(
+                    t( norm.within.cond.data[ norm.probe.idx,
+                        cond == ma.sample.condition ] ),
                     2, function( ed ) sample( ed, norm.bal.mean.n ) ) ) )
         )
         
         # for F-statistic
         # calculate within-condition means
-        norm.within.cond.mean <- sapply( ma.condition, function( cond ) 
-            rowMeans( norm.within.cond.data[ norm.probe.idx, 
+        norm.within.cond.mean <- sapply( ma.condition, function( cond )
+            rowMeans( norm.within.cond.data[ norm.probe.idx,
                 cond == ma.sample.condition ] ) )
         
         norm.within.cond.grand.mean <- colMeans( norm.within.cond.mean )
         
         # calculate within-condition variances
-        norm.within.cond.var <- sweep( sapply( ma.condition, function( cond ) 
-            apply( norm.within.cond.data[ norm.probe.idx, 
-                cond == ma.sample.condition ], 1, var ) ), 
+        norm.within.cond.var <- sweep( sapply( ma.condition, function( cond )
+            apply( norm.within.cond.data[ norm.probe.idx,
+                cond == ma.sample.condition ], 1, var ) ),
             2, norm.within.cond.n - 1, "*" )
-        norm.within.cond.var <- rowSums( norm.within.cond.var ) / 
+        norm.within.cond.var <- rowSums( norm.within.cond.var ) /
             ( sum( norm.within.cond.n ) - length( ma.condition.num ) )
         
         # calculate within-condition medians
-        norm.within.cond.median <- apply( 
+        norm.within.cond.median <- apply(
             norm.within.cond.data[ norm.probe.idx, ], 2, median )
         
-        norm.within.cond.median.mean <- sapply( ma.condition, function( cond ) 
+        norm.within.cond.median.mean <- sapply( ma.condition, function( cond )
             mean( norm.within.cond.median[ cond == ma.sample.condition ] ) )
         
-        # iterate over random yes/no and then by number of probes
+        # iterate over true/false random and then by the number of probes
         for ( h0p.random in c( TRUE, FALSE ) )
         {
-            norm.h0p.method <- paste0( nmeth, 
+            norm.h0p.method <- paste0( nmeth,
                 ifelse( h0p.random, ".random", ".pvalue" ) )
             
             for ( h0p.num in h0.probe.num )
             {
                 cat( paste( dtag, norm.h0p.method, h0p.num, "\n" ) )
                 
-                norm.between.cond.result <- switch( nmeth, 
-                    stdvec.condec = normalize.standard.vector.probe( 
-                        norm.bal.within.cond.mean, norm.within.cond.mean, 
-                        norm.within.cond.var, norm.within.cond.n, 
-                        "between.condition", h0p.random, h0p.num, verbose=TRUE, 
-                        vector.graph=NULL ), 
-                    median.condec = normalize.median.selection.probe( 
-                        norm.bal.within.cond.mean, norm.within.cond.mean, 
-                        norm.within.cond.var, norm.within.cond.n, 0.5, 
-                        h0p.random, h0p.num, verbose=TRUE ) )
+                norm.between.cond.result <- switch( nmeth,
+                    stdvec.condec = normalize.standard.vector.probe(
+                        norm.bal.within.cond.mean, norm.within.cond.mean,
+                        norm.within.cond.var, norm.within.cond.n, h0p.random,
+                        h0p.num, TRUE ),
+                    median.condec = normalize.median.selection.probe(
+                        norm.bal.within.cond.mean, norm.within.cond.mean,
+                        norm.within.cond.var, norm.within.cond.n, 0.5,
+                        h0p.random, h0p.num, TRUE ) )
                 
-                norm.between.cond.grand.mean.sd <- 
-                    sd( norm.within.cond.grand.mean - 
+                norm.between.cond.grand.mean.sd <-
+                    sd( norm.within.cond.grand.mean -
                         norm.between.cond.result$offset )
                 
-                norm.between.cond.median.mean.sd <- 
-                    sd( norm.within.cond.median.mean - 
+                norm.between.cond.median.mean.sd <-
+                    sd( norm.within.cond.median.mean -
                         norm.between.cond.result$offset )
                 
-                cond.grand.mean.sd[[ norm.h0p.method ]][ 
-                    cond.grand.mean.sd$h0.probe.num == h0p.num ] <- 
+                cond.grand.mean.sd[[ norm.h0p.method ]][
+                    cond.grand.mean.sd$h0.probe.num == h0p.num ] <-
                     norm.between.cond.grand.mean.sd
                 
-                cond.median.mean.sd[[ norm.h0p.method ]][ 
-                    cond.median.mean.sd$h0.probe.num == h0p.num ] <- 
+                cond.median.mean.sd[[ norm.h0p.method ]][
+                    cond.median.mean.sd$h0.probe.num == h0p.num ] <-
                     norm.between.cond.median.mean.sd
             }
         }
@@ -511,7 +612,7 @@ for ( dtag in data.tag )
     grand.mean.sd.file.name <- paste0( dtag, "_grand.mean.sd.rda" )
     save( cond.grand.mean.sd, 
         file = file.path( data.dir, grand.mean.sd.file.name ) )
-
+    
     # save variance of median means
     median.mean.sd.file.name <- paste0( dtag, "_median.mean.sd.rda" )
     save( cond.median.mean.sd, 
@@ -522,10 +623,10 @@ for ( dtag in data.tag )
     {
         bcmp.file.name <- paste0( dtag, "_", bcmean, ".sd.pdf" )
         cairo_pdf( filename = file.path( bc.variation.dir, bcmp.file.name ), 
-            width=3.5, height=2.8 )
+            width=3.25, height=2.60 )
         
-        par( mar = c( 1.7, 1.45, 0.15, 0.15 ), mgp = c( 0.75, 0, 0 ), 
-            tcl=-0.15 )
+        par( mar = c( 1.90, 1.70, 0.15, 0.15 ), mgp = c( 0.90, 0, 0 ), 
+            tcl=-0.10 )
         
         bcmp.xlim <- range( h0.probe.num )
         x.tick.pos <- c( 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 )
@@ -533,12 +634,14 @@ for ( dtag in data.tag )
         
         if ( bcmean == "grand.mean" )
         {
-            if ( dtag == "real" ) {
+            if ( dtag == "real" || dtag == "normal.de" )
+            {
                 bcmp.ylim <- 0.5 * 10^c( -1.7, 0.1 )
                 y.tick.pos <- c( 0.01, 0.02, 0.05, 0.1, 0.2, 0.5 )
                 y.tick.lab <- c( "0.01", "", "", "0.1", "", "0.5" )
             }
-            else {    # dtag == "normal"
+            else    # dtag == "normal"
+            {
                 bcmp.ylim <- 0.5 * 10^c( -2.7, 0.1 )
                 y.tick.pos <- 
                     c( 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5 )
@@ -548,7 +651,7 @@ for ( dtag in data.tag )
         }
         else    # bcmean == "median.mean"
         {
-            if ( dtag == "real" )
+            if ( dtag == "real" || dtag == "normal.de" )
                 bcmp.ylim <- 0.5 * 10^c( -1.8, 0.1 )
             else    # dtag == "normal"
                 bcmp.ylim <- 0.5 * 10^c( -1.9, 0.1 )
@@ -556,25 +659,25 @@ for ( dtag in data.tag )
             y.tick.lab <- c( "0.01", "", "", "0.1", "", "0.5" )
         }
         
-        norm.method.col <- c( "black", "blue" )
-        names( norm.method.col ) <- norm.method
-        
-        plot( 1, type="n", cex.lab=0.55, log="xy", xaxt="n", yaxt="n", 
+        plot( 1, type="n", cex.lab=0.67, log="xy", xaxt="n", yaxt="n", 
             xlim=bcmp.xlim , ylim=bcmp.ylim, 
-            xlab="# Gene probes in between-condition normalization", 
+            xlab="# Genes in between-condition normalization", 
             ylab="Between-condition variation" )
         
-        axis( 1, at=x.tick.pos, labels=x.tick.lab, cex.axis=0.55 )
-        axis( 2, at=y.tick.pos, labels=y.tick.lab, cex.axis=0.55 )
+        axis( 1, at=x.tick.pos, labels=x.tick.lab, cex.axis=0.67 )
+        axis( 2, at=y.tick.pos, labels=y.tick.lab, cex.axis=0.67 )
         
         segments( 20, 0.5, 20e3, 0.5*10^-1.5, lty=2, lwd=2 )
+        
+        bc.variation.col <- c( "black", "blue3" )
+        names( bc.variation.col ) <- norm.method
         
         for ( nmeth in norm.method )
         {
             norm.result <- get( paste0( nmeth, ".norm.result" ) )
             
             norm.h0.probe.num <- 
-                length( norm.result$between.condition.h0.probe )
+                length( norm.result$h0.probe )
             
             if ( bcmean == "grand.mean" ) {
                 norm.cond.mean <- sapply( ma.condition, function( cond ) 
@@ -591,17 +694,17 @@ for ( dtag in data.tag )
             }
             
             points( norm.h0.probe.num, norm.cond.bcmean.sd, 
-                col = norm.method.col[ nmeth ], pch=1, cex=2, lwd=2 )
+                col = bc.variation.col[ nmeth ], pch=1, cex=2, lwd=2 )
             
             cond.bcmean.sd <- get( paste0( "cond.", bcmean, ".sd" ) )
             
             points( cond.bcmean.sd$h0.probe.num, 
                 cond.bcmean.sd[[ paste0( nmeth, ".random" ) ]], cex=0.8, 
-                col = norm.method.col[ nmeth ], pch=1 )
+                col = bc.variation.col[ nmeth ], pch=1 )
             
             points( cond.bcmean.sd$h0.probe.num, 
                 cond.bcmean.sd[[ paste0( nmeth, ".pvalue" ) ]], cex=0.6, 
-                col = norm.method.col[ nmeth ], pch=20 )
+                col = bc.variation.col[ nmeth ], pch=20 )
         }
         
         dev.off()
@@ -610,24 +713,15 @@ for ( dtag in data.tag )
 
 
 # study the number of differentially expressed genes in treatment-vs-control 
-# comparisons
+# comparisons, and study tpr and fdr in dataset with known differential gene 
+# expression
 
 ma.treatment.test <- as.vector( sapply( ma.treatment, function( mt )
     paste0( mt, c( ".fc", ".pv", ".fdr" ) ) ) )
 
-dtag <- "real"
+data.tag <- c( "real", "normal", "normal.de" )
 
 norm.method <- c( "median", "quantile", "median.condec", "stdvec.condec" )
-
-norm.data.var <- c( "median.norm.data", "quantile.norm.data", 
-    "median.condec.norm.result", "stdvec.condec.norm.result" )
-
-norm.file.name <- paste0( dtag, "_norm.data.rda" )
-loaded <- load( file.path( data.dir, norm.file.name ) )
-stopifnot( norm.data.var %in% loaded )
-
-median.condec.norm.data <- median.condec.norm.result$data
-stdvec.condec.norm.data <- stdvec.condec.norm.result$data
 
 diff.expr.method <- c( "ttest", "limma" )
 
@@ -652,114 +746,282 @@ diff.expr.contrast <- mapply( function( t, c ) {
 }, ma.treatment, ma.control )
 rownames( diff.expr.contrast ) <- ma.condition
 
-# iterate over differential expression methods and then over normalizations
+# iterate over dataset, then over differential gene expression methods, and 
+# then over normalizations
 
-for ( demeth in diff.expr.method )
+for ( dtag in data.tag )
 {
-    for ( nmeth in norm.method )
+    norm.file.name <- paste0( dtag, "_norm.data.rda" )
+    loaded <- load( file.path( data.dir, norm.file.name ) )
+    stopifnot( norm.data.var %in% loaded )
+    
+    median.condec.norm.data <- median.condec.norm.result$data
+    stdvec.condec.norm.data <- stdvec.condec.norm.result$data
+    
+    for ( demeth in diff.expr.method )
     {
-        norm.data <- get( paste0( nmeth, ".norm.data" ) )
-        
-        stopifnot( rownames( norm.data ) == ma.probe )
-        stopifnot( colnames( norm.data ) == ma.sample )
-        
-        if ( demeth == "ttest" )
+        for ( nmeth in norm.method )
         {
-            diff.expr <-  mapply( function( t, c ) {
-                tc.col <- ma.sample.condition == t | ma.sample.condition == c
-                tc.factor <- factor( ( 1*( ma.sample.condition == t ) + 
-                        2*( ma.sample.condition == c ) )[ tc.col ] )
-                rtt <- rowttests( norm.data[ , tc.col ], tc.factor )
-                rtt$fdr <- p.adjust( rtt$p.value, method="fdr" )
-                c( rtt$dm, rtt$p.value, rtt$fdr )
-            }, ma.treatment, ma.control )
+            norm.data <- get( paste0( nmeth, ".norm.data" ) )
+            
+            stopifnot( rownames( norm.data ) == ma.probe )
+            stopifnot( colnames( norm.data ) == ma.sample )
+            
+            if ( demeth == "ttest" )
+            {
+                diff.expr <-  mapply( function( t, c ) {
+                    tc.col <- ma.sample.condition == t | 
+                        ma.sample.condition == c
+                    tc.factor <- factor( ( 1*( ma.sample.condition == t ) + 
+                            2*( ma.sample.condition == c ) )[ tc.col ] )
+                    rtt <- rowttests( norm.data[ , tc.col ], tc.factor )
+                    rtt$fdr <- p.adjust( rtt$p.value, method="fdr" )
+                    c( rtt$dm, rtt$p.value, rtt$fdr )
+                }, ma.treatment, ma.control )
+            }
+            else    # demeth == "limma"
+            {
+                model.fit <- lmFit( norm.data, model.design )
+                diff.expr.fit <- contrasts.fit( model.fit, diff.expr.contrast )
+                diff.expr.efit <- eBayes( diff.expr.fit )
+                diff.expr <- sapply( ma.treatment, function( mt ) {
+                    de.table <- topTable( diff.expr.efit, coef=mt, number=Inf, 
+                        sort.by="none" )
+                    c( de.table$logFC, de.table$P.Value, de.table$adj.P.Val )
+                } )
+            }
+            
+            dim( diff.expr ) <- c( ma.probe.num, length( ma.treatment.test ) )
+            rownames( diff.expr ) <- ma.probe
+            colnames( diff.expr ) <- ma.treatment.test
+            
+            assign( paste0( nmeth, ".diff.expr" ), 
+                data.frame( probe=ma.probe, diff.expr, stringsAsFactors=FALSE ) )
         }
-        else    # demeth == "limma"
+        
+        diff.expr.file.name <- paste0( dtag, "_", demeth, ".diff.expr.rda" )
+        save( list = paste0( norm.method, ".diff.expr" ), 
+            file = file.path( data.dir, diff.expr.file.name ) )
+        
+        # find the number of differentially expressed genes
+        
+        for ( nmeth in norm.method )
         {
-            model.fit <- lmFit( norm.data, model.design )
-            diff.expr.fit <- contrasts.fit( model.fit, diff.expr.contrast )
-            diff.expr.efit <- eBayes( diff.expr.fit )
-            diff.expr <- sapply( ma.treatment, function( mt ) {
-                de.table <- topTable( diff.expr.efit, coef=mt, number=Inf, 
-                    sort.by="none" )
-                c( de.table$logFC, de.table$P.Value, de.table$adj.P.Val )
-            } )
+            diff.expr <- get( paste0( nmeth, ".diff.expr" ) )
+            
+            diff.expr.fdr <- diff.expr[ , grep( "\\.fdr$", names( diff.expr ) ) ]
+            colnames( diff.expr.fdr ) <- sub( "\\.fdr$", "", 
+                colnames( diff.expr.fdr ) )
+            stopifnot( colnames( diff.expr.fdr ) == ma.treatment )
+            
+            diff.expr.num <- colSums( diff.expr.fdr < alpha, na.rm=TRUE )
+            assign( paste0( nmeth, ".diff.expr.num" ), diff.expr.num )
+            
+            if ( dtag == "normal.de" )
+            {
+                diff.expr.actual.tpr <- sapply( ma.treatment, function( mt ) { 
+                    probe.pos <- ma.probe[ diff.expr.fdr[ , mt ] < alpha ]
+                    ifelse ( length( probe.pos ) > 0, 
+                        mean( normal.de.probe[[ mt ]] %in% probe.pos ), 
+                        0 )
+                } )
+                
+                assign( paste0( nmeth, ".diff.expr.actual.tpr" ), 
+                    diff.expr.actual.tpr )
+                
+                diff.expr.actual.fdr <- sapply( ma.treatment, function( mt ) { 
+                    probe.pos <- ma.probe[ diff.expr.fdr[ , mt ] < alpha ]
+                    ifelse ( length( probe.pos ) > 0, 
+                        mean( ! probe.pos %in% normal.de.probe[[ mt ]] ), 
+                        NA )
+                } )
+                
+                assign( paste0( nmeth, ".diff.expr.actual.fdr" ), 
+                    diff.expr.actual.fdr )
+            }
         }
         
-        dim( diff.expr ) <- c( ma.probe.num, length( ma.treatment.test ) )
-        rownames( diff.expr ) <- ma.probe
-        colnames( diff.expr ) <- ma.treatment.test
+        diff.expr.num.file.name <- paste0( dtag, "_", demeth, 
+            ".diff.expr.num.rda" )
+        save( list = paste0( norm.method, ".diff.expr.num" ), 
+            file = file.path( data.dir, diff.expr.num.file.name ) )
         
-        assign( paste0( nmeth, ".diff.expr" ), 
-            data.frame( probe=ma.probe, diff.expr, stringsAsFactors=FALSE ) )
+        # plot the number of differentially expressed genes
+        
+        dep.file.name <- paste0( dtag, "_", demeth, ".diff.expr.pdf" )
+        cairo_pdf( filename = file.path( diff.expr.dir, dep.file.name ), 
+            width=3.25, height=2.60 )
+        
+        par( mar = c( 1.90, 1.70, 0.15, 0.15 ), mgp = c( 0.90, 0, 0 ), 
+            tcl=-0.10 )
+        
+        plot( 1, type="n", cex.lab=0.67, cex.axis=0.67, log="y", xaxt="n", 
+            xlim = c( 1, ma.treatment.num ), ylim = c( 1, ma.probe.num ), 
+            xlab="Treatment vs control comparison", 
+            ylab="# Differentially expressed genes" )
+        
+        axis( 1, at = seq( 5, ma.treatment.num, 5 ), cex.axis=0.67 )
+        
+        diff.expr.num.order <- order( stdvec.condec.diff.expr.num )
+        
+        if ( dtag == "normal.de" )
+            points( 1 : ma.treatment.num, 
+                normal.de.probe.num[ diff.expr.num.order ], cex=1, lwd=1, 
+                pch=6 )
+        
+        for ( nmeth in norm.method )
+        {
+            diff.expr.num <- get( paste0( nmeth, ".diff.expr.num" ) )
+            diff.expr.num.plot <- diff.expr.num[ diff.expr.num.order ]
+            
+            points( ( 1 : ma.treatment.num )[ diff.expr.num.plot > 0 ], 
+                diff.expr.num.plot[ diff.expr.num.plot > 0 ], cex=1, lwd=1, 
+                pch=norm.method.pch[ nmeth ], col=norm.method.col[ nmeth ] )
+        }
+        
+        dev.off()
+        
+        if ( dtag == "normal.de" && demeth == "limma" )
+        {
+            # plot actual tpr
+            
+            dep.file.name <- paste0( dtag, "_", demeth, ".diff.expr.tpr.pdf" )
+            cairo_pdf( filename = file.path( diff.expr.dir, dep.file.name ), 
+                width=3.25, height=2.60 )
+            
+            par( mar = c( 1.90, 1.70, 0.15, 0.15 ), mgp = c( 0.90, 0, 0 ), 
+                tcl=-0.10 )
+            
+            plot( 1, type="n", cex.lab=0.67, cex.axis=0.67, xaxt="n", 
+                xlim = c( 1, ma.treatment.num ), ylim = c( 0, 0.6 ),
+                xlab="Treatment vs control comparison",
+                ylab="True positive rate" )
+            
+            axis( 1, at = seq( 5, ma.treatment.num, 5 ), cex.axis=0.67 )
+            
+            for ( nmeth in norm.method )
+            {
+                diff.expr.actual.tpr <- get( paste0( nmeth, 
+                    ".diff.expr.actual.tpr" ) )
+                diff.expr.actual.tpr.plot <- diff.expr.actual.tpr[ 
+                    diff.expr.num.order ]
+                
+                points( 1 : ma.treatment.num, diff.expr.actual.tpr.plot, cex=1, 
+                    lwd=1, pch=norm.method.pch[ nmeth ], 
+                    col=norm.method.col[ nmeth ] )
+            }
+            
+            dev.off()
+            
+            # plot actual fdr
+            
+            dep.file.name <- paste0( dtag, "_", demeth, ".diff.expr.fdr.pdf" )
+            cairo_pdf( filename = file.path( diff.expr.dir, dep.file.name ), 
+                width=3.25, height=2.60 )
+            
+            par( mar = c( 1.90, 1.70, 0.15, 0.15 ), mgp = c( 0.90, 0, 0 ), 
+                tcl=-0.10 )
+            
+            plot( 1, type="n", cex.lab=0.67, cex.axis=0.67, xaxt="n", 
+                xlim = c( 1, ma.treatment.num ), ylim = c( 0, 0.6 ),
+                xlab="Treatment vs control comparison",
+                ylab="False discovery rate" )
+            
+            axis( 1, at = seq( 5, ma.treatment.num, 5 ), cex.axis=0.67 )
+            
+            abline( h=0.05, lty=2, col="blue3" )
+            
+            for ( nmeth in norm.method )
+            {
+                diff.expr.actual.fdr <- get( paste0( nmeth, 
+                    ".diff.expr.actual.fdr" ) )
+                diff.expr.actual.fdr.plot <- diff.expr.actual.fdr[ 
+                    diff.expr.num.order ]
+                
+                points( 1 : ma.treatment.num, diff.expr.actual.fdr.plot, cex=1, 
+                    lwd=1, pch=norm.method.pch[ nmeth ], 
+                    col=norm.method.col[ nmeth ] )
+            }
+            
+            dev.off()
+            
+            # plot tpr vs balance of differential gene expression
+            
+            dep.file.name <- paste0( dtag, "_", demeth, 
+                ".diff.expr.tpr.vs.balance.pdf" )
+            cairo_pdf( filename = file.path( diff.expr.dir, dep.file.name ), 
+                width=3.25, height=2.60 )
+            
+            par( mar = c( 1.90, 1.70, 0.15, 0.15 ), mgp = c( 0.90, 0, 0 ), 
+                tcl=-0.10 )
+            
+            plot( 1, type="n", cex.lab=0.67, cex.axis=0.67, xlim = c( -1, 1 ), 
+                ylim = c( 0, 0.6 ), 
+                xlab="Balance of differential gene expression", 
+                ylab="True positive rate" )
+            
+            axis( 1, at = seq( 5, ma.treatment.num, 5 ), cex.axis=0.67 )
+            
+            for ( nmeth in norm.method )
+            {
+                diff.expr.actual.tpr <- get( paste0( nmeth, 
+                    ".diff.expr.actual.tpr" ) )
+                
+                stopifnot( names( diff.expr.actual.tpr ) ==
+                        names( normal.de.diff.expr.balance ) )
+                
+                points( normal.de.diff.expr.balance, diff.expr.actual.tpr,
+                    cex=1, lwd=1, pch=norm.method.pch[ nmeth ],
+                    col=norm.method.col[ nmeth ] )
+            }
+            
+            dev.off()
+            
+            # plot fdr vs balance of differential gene expression
+            
+            dep.file.name <- paste0( dtag, "_", demeth, 
+                ".diff.expr.fdr.vs.balance.pdf" )
+            cairo_pdf( filename = file.path( diff.expr.dir, dep.file.name ), 
+                width=3.25, height=2.60 )
+            
+            par( mar = c( 1.90, 1.70, 0.15, 0.15 ), mgp = c( 0.90, 0, 0 ), 
+                tcl=-0.10 )
+            
+            plot( 1, type="n", cex.lab=0.67, cex.axis=0.67, xlim = c( -1, 1 ), 
+                ylim = c( 0, 0.6 ), 
+                xlab="Balance of differential gene expression", 
+                ylab="False discovery rate" )
+            
+            axis( 1, at = seq( 5, ma.treatment.num, 5 ), cex.axis=0.67 )
+            
+            abline( h=0.05, lty=2, col="blue3" )
+            
+            for ( nmeth in norm.method )
+            {
+                diff.expr.actual.fdr <- get( paste0( nmeth, 
+                    ".diff.expr.actual.fdr" ) )
+                
+                stopifnot( names( diff.expr.actual.fdr ) ==
+                    names( normal.de.diff.expr.balance ) )
+                
+                points( normal.de.diff.expr.balance, diff.expr.actual.fdr, 
+                    cex=1, lwd=1, pch=norm.method.pch[ nmeth ], 
+                    col=norm.method.col[ nmeth ] )
+            }
+            
+            dev.off()
+        }
     }
-    
-    diff.expr.file.name <- paste0( dtag, "_", demeth, ".diff.expr.rda" )
-    save( list = paste0( norm.method, ".diff.expr" ), 
-        file = file.path( data.dir, diff.expr.file.name ) )
-    
-    # find the number of differentially expressed genes
-    
-    for ( nmeth in norm.method )
-    {
-        diff.expr <- get( paste0( nmeth, ".diff.expr" ) )
-        diff.expr.fdr <- diff.expr[ , grep( "\\.fdr$", names( diff.expr ) ) ]
-        diff.expr.num <- colSums( diff.expr.fdr < alpha, na.rm=TRUE )
-        
-        names( diff.expr.num ) <- sub( "\\.fdr$", "", names( diff.expr.num ) )
-        stopifnot( names( diff.expr.num ) == ma.treatment )
-        
-        assign( paste0( nmeth, ".diff.expr.num" ), diff.expr.num )
-    }
-    
-    diff.expr.num.file.name <- paste0( dtag, "_", demeth, ".diff.expr.num.rda" )
-    save( list = paste0( norm.method, ".diff.expr.num" ), 
-        file = file.path( data.dir, diff.expr.num.file.name ) )
-    
-    # plot the number of differentially expressed genes
-    
-    dep.file.name <- paste0( dtag, "_", demeth, ".diff.expr.pdf" )
-    cairo_pdf( filename = file.path( diff.expr.dir, dep.file.name ), width=3.5, 
-        height=2.8 )
-    
-    par( mar = c( 1.7, 1.45, 0.15, 0.15 ), mgp = c( 0.75, 0, 0 ), tcl=-0.15 )
-    
-    norm.method.pch <- c( 1, 2, 19, 17 )
-    norm.method.col <- c( "black", "red3", "green3", "blue3" )
-    
-    names( norm.method.pch ) <- norm.method
-    names( norm.method.col ) <- norm.method
-    
-    plot( 1, type="n", cex.lab=0.55, cex.axis=0.55, log="y", xaxt="n", 
-        xlim = c( 1, ma.treatment.num ), ylim = c( 1, ma.probe.num ), 
-        xlab="Treatment vs control comparison", 
-        ylab="# Differentially expressed gene probes" )
-    
-    axis( 1, at = seq( 5, ma.treatment.num, 5 ), cex.axis=0.55 )
-    
-    diff.expr.num.order <- order( stdvec.condec.diff.expr.num )
-    
-    for ( nmeth in norm.method )
-    {
-        diff.expr.num <- get( paste0( nmeth, ".diff.expr.num" ) )
-        diff.expr.num.plot <- diff.expr.num[ diff.expr.num.order ]
-        
-        points( ( 1 : ma.treatment.num )[ diff.expr.num.plot > 0 ], 
-            diff.expr.num.plot[ diff.expr.num.plot > 0 ], cex=1, lwd=1, 
-            pch=norm.method.pch[ nmeth ], col=norm.method.col[ nmeth ] )
-    }
-    
-    dev.off()
 }
 
 
-# study the magnitude of differential expression
+# study the magnitude of differential gene expression
 
 dtag <- "real"
 
 demeth <- "limma"
 
-norm.method <- c( "quantile", "stdvec.condec" )
+norm.method <- c( "median", "quantile", "median.condec", "stdvec.condec" )
 
 diff.expr.var <- paste0( norm.method, ".diff.expr" )
 diff.expr.file.name <- paste0( dtag, "_", demeth, ".diff.expr.rda" )
@@ -771,10 +1033,12 @@ diff.expr.num.file.name <- paste0( dtag, "_", demeth, ".diff.expr.num.rda" )
 loaded <- load( file.path( data.dir, diff.expr.num.file.name ) )
 stopifnot( diff.expr.num.var %in% loaded )
 
+# fix order of conditions from results obtained with stdvec.condec
 diff.expr.num.order <- order( stdvec.condec.diff.expr.num )
 
 # write table of sorted treatment-vs-control comparisons
-treat.cont.file.name <- paste0( dtag, "_", demeth, ".treatment.control.csv" )
+treat.cont.file.name <- paste0( dtag, "_stdvec.condec_", demeth, 
+    ".treatment.control.csv" )
 write.csv( cbind( 1:ma.treatment.num, 
     ma.treatment[ diff.expr.num.order ], 
     ma.control[ diff.expr.num.order ], 
@@ -783,34 +1047,127 @@ write.csv( cbind( 1:ma.treatment.num,
 
 for ( nmeth in norm.method )
 {
-    diff.expr.fc <- lapply( ma.treatment, function( mt ) {
-        de.data <- get( paste0( nmeth, ".diff.expr" ) )
-        de.fdr <- de.data[[ paste0( mt, ".fdr" ) ]]
-        de.fc <- de.data[[ paste0( mt, ".fc" ) ]][ de.fdr < alpha ]
-        if ( is.null( de.fc ) ) de.fc else abs( de.fc )
+    diff.expr.data <- get( paste0( nmeth, ".diff.expr" ) )
+    
+    diff.expr.abs.fc <- lapply( ma.treatment, function( mt ) {
+        de.fdr <- diff.expr.data[[ paste0( mt, ".fdr" ) ]]
+        de.fc <- diff.expr.data[[ paste0( mt, ".fc" ) ]][ de.fdr < alpha ]
+        if ( is.null( de.fc ) ) de.fc else 2^abs( de.fc )
     } )
     
-    # plot fold change of differentially expressed genes
-    
-    fcp.file.name <- paste0( dtag, "_", demeth, ".diff.expr.fc_", nmeth, 
+    fcp.file.name <- paste0( dtag, "_", demeth, ".diff.expr.abs.fc_", nmeth, 
         ".pdf" )
-    cairo_pdf( filename = file.path( diff.expr.dir, fcp.file.name ), width=3.5, 
-        height=2.8 )
+    cairo_pdf( filename = file.path( diff.expr.dir, fcp.file.name ), 
+        width=3.25, height=2.60 )
     
-    par( mar = c( 1.7, 1.45, 0.15, 0.15 ), mgp = c( 0.75, 0, 0 ), tcl=-0.15 )
+    par( mar = c( 1.90, 1.70, 0.15, 0.15 ), mgp = c( 0.90, 0, 0 ), tcl=-0.10 )
     
-    boxplot( diff.expr.fc[ diff.expr.num.order ], cex.lab=0.55, cex.axis=0.55, 
-        log="y", xaxt="n", 
-        xlim = c( 1, ma.treatment.num ), ylim = c( 0.3, 11 ), 
-        xlab="Treatment vs control comparison", ylab="| DEGP fold change |", 
-        col = ma.treatment.color[ diff.expr.num.order ], pch=20, cex=0.5, 
+    boxplot( diff.expr.abs.fc[ diff.expr.num.order ], cex.lab=0.67, 
+        cex.axis=0.67, log="y", xaxt="n", yaxt="n", 
+        xlim = c( 1, ma.treatment.num ), 
+        ylim = c( 1.25, 10 ), xlab="Treatment vs control comparison", 
+        ylab = "| DEG fold change |", 
+        col = ma.treatment.color[ diff.expr.num.order ], pch=20, cex=0.1, 
         lwd=0.5 )
     
-    axis( 1, at = seq( 5, ma.treatment.num, 5 ), cex.axis=0.55 )
+    axis( 1, at = seq( 5, ma.treatment.num, 5 ), cex.axis=0.67 )
+    axis( 2, at = c( 1.5, 2, 4, 8 ), cex.axis=0.67 )
     
-    abline( h=log2( 1.5 ), lty=2, lwd=2 )
-    abline( h=1, lty=2, lwd=2 )
+    abline( h=1.5, lty=2, lwd=2 )
+    abline( h=2, lty=2, lwd=2 )
     
     dev.off()
+    
+    # print number of treatments with median absolute fold change larger 
+    # than 2-fold
+    abs.fc.threshold <- 2
+    cat( sprintf( "%s - %s.norm - number of treatments with abs-fc>%g: %g\n", 
+        demeth, nmeth, abs.fc.threshold, 
+        sum( sapply( diff.expr.abs.fc, median ) > abs.fc.threshold ) ) )
 }
+
+
+# study the balance of differential gene expression
+
+dtag <- "real"
+
+demeth <- "limma"
+
+norm.method <- c( "median", "quantile", "median.condec", "stdvec.condec" )
+
+diff.expr.var <- paste0( norm.method, ".diff.expr" )
+diff.expr.file.name <- paste0( dtag, "_", demeth, ".diff.expr.rda" )
+loaded <- load( file.path( data.dir, diff.expr.file.name ) )
+stopifnot( diff.expr.var %in% loaded )
+
+diff.expr.num.var <- paste0( norm.method, ".diff.expr.num" )
+diff.expr.num.file.name <- paste0( dtag, "_", demeth, ".diff.expr.num.rda" )
+loaded <- load( file.path( data.dir, diff.expr.num.file.name ) )
+stopifnot( diff.expr.num.var %in% loaded )
+
+# fix order of conditions from results obtained with stdvec.condec
+diff.expr.num.order <- order( stdvec.condec.diff.expr.num )
+
+for ( nmeth in norm.method )
+{
+    diff.expr.data <- get( paste0( nmeth, ".diff.expr" ) )
+    
+    diff.expr.balance <- sapply( ma.treatment, function( mt ) {
+        de.fdr <- diff.expr.data[[ paste0( mt, ".fdr" ) ]]
+        de.fc <- diff.expr.data[[ paste0( mt, ".fc" ) ]][ de.fdr < alpha ]
+        if ( is.null( de.fc ) ) de.fc else mean( sign( de.fc ) )
+    } )
+    
+    fcp.file.name <- paste0( dtag, "_", demeth, ".diff.expr.balance_", nmeth, 
+        ".pdf" )
+    cairo_pdf( filename = file.path( diff.expr.dir, fcp.file.name ), 
+        width=3.25, height=2.60 )
+    
+    par( mar = c( 1.90, 1.70, 0.15, 0.15 ), mgp = c( 0.90, 0, 0 ), tcl=-0.10 )
+    
+    plot( diff.expr.balance[ diff.expr.num.order ], cex.lab=0.67, 
+        cex.axis=0.67, xaxt="n", xlim = c( 1, ma.treatment.num ), 
+        ylim = c( -1, 1 ), xlab="Treatment vs control comparison", 
+        ylab = "Balance of differential gene expression", 
+        col="black", bg = ma.treatment.color[ diff.expr.num.order ], pch=21, 
+        lwd=0.5 )
+    
+    axis( 1, at = seq( 5, ma.treatment.num, 5 ), cex.axis=0.67 )
+
+    abline( h=0, lty=2, lwd=1 )
+
+    dev.off()
+    
+    # print number of treatments with absolute balance larger than 0.5
+    balance.threshold <- 0.5
+    cat( sprintf( "%s - %s.norm - number of treatments with abs-bal>%g: %g\n", 
+        demeth, nmeth, balance.threshold, 
+        sum( abs( diff.expr.balance ) > balance.threshold ) ) )
+}
+
+
+# print probe numbers
+
+cat( sprintf( "number of probes: %d\n", ma.probe.num ) )
+
+cat( sprintf( "normal.de - number of treatment positives: %d\n", 
+    length( normal.de.probe.all ) ) )
+cat( sprintf( "normal.de - number of treatment negatives: %d\n", 
+    length( normal.nonde.probe.all ) ) )
+
+norm.file.name <- "normal.de_norm.data.rda"
+loaded <- load( file.path( data.dir, norm.file.name ) )
+stopifnot( norm.data.var %in% loaded )
+
+median.condec.h0.probe <- median.condec.norm.result$h0.probe
+cat( sprintf( "normal.de - median.condec - number of h0 probes: %d\n", 
+    length( median.condec.h0.probe ) ) )
+cat( sprintf( "normal.de - median.condec - fraction of true h0 probes: %g\n", 
+    mean( median.condec.h0.probe %in% normal.nonde.probe.all ) ) )
+
+stdvec.condec.h0.probe <- stdvec.condec.norm.result$h0.probe
+cat( sprintf( "normal.de - stdvec.condec - number of h0 probes: %d\n", 
+    length( stdvec.condec.h0.probe ) ) )
+cat( sprintf( "normal.de - stdvec.condec - fraction of true h0 probes: %g\n", 
+    mean( stdvec.condec.h0.probe %in% normal.nonde.probe.all ) ) )
 
